@@ -285,7 +285,7 @@ class CapitalizationChecker:
 
     def _is_at_sentence_start(self, prefix_slice: str) -> bool:
         """Menentukan apakah posisi saat ini adalah awal teks atau tepat setelah tanda akhir kalimat (. ? !)."""
-        stripped = prefix_slice.strip()
+        stripped = prefix_slice.strip(" \t\n\r\uE000\uE001")
         if not stripped:
             return True
         if self._TITLE_ABBR_PREFIX_RE.search(stripped):

@@ -82,11 +82,12 @@ class TestPRPMStandardizationAndMorphology(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.pipeline = PRPMPipeline(eight_word="lapan")
+        cls.pipeline = PRPMPipeline(eight_word="lapan", mode="annotation")
+        cls.pipeline_baku = PRPMPipeline(eight_word="lapan", mode="baku")
 
-    def test_slang_and_sms_abbreviations_to_prpm(self) -> None:
+    def test_slang_and_sms_abbreviations_to_prpm_baku_mode(self) -> None:
         inp = "korang nak pergi kat pejabat skrg ke , sbb dgn jadual baru ni diorang takde masa."
-        res = self.pipeline.process(inp)
+        res = self.pipeline_baku.process(inp)
         self.assertEqual(
             res.corrected_text,
             "Kamu semua hendak pergi di pejabat sekarang ke, sebab dengan jadual baru ini mereka tiada masa.",
@@ -161,6 +162,10 @@ class TestPRPMStandardizationAndMorphology(unittest.TestCase):
     def test_contextual_pasal_and_boleh_tak(self) -> None:
         self.assertEqual(
             self.pipeline.process("saya nak tanya pasal projek tu boleh tak").corrected_text,
+            "Saya nak tanya tentang projek tu boleh tak?",
+        )
+        self.assertEqual(
+            self.pipeline_baku.process("saya nak tanya pasal projek tu boleh tak").corrected_text,
             "Saya hendak tanya tentang projek itu boleh atau tidak?",
         )
         self.assertEqual(
@@ -188,13 +193,19 @@ class TestEnglishPreservation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.pipeline = PRPMPipeline(eight_word="lapan")
+        cls.pipeline = PRPMPipeline(eight_word="lapan", mode="annotation")
+        cls.pipeline_baku = PRPMPipeline(eight_word="lapan", mode="baku")
 
     def test_english_words_and_inflections_preserved(self) -> None:
         inp = "saya nak join meetings di office dan check updated attachments yang sudah uploaded semalam"
         res = self.pipeline.process(inp)
         self.assertEqual(
             res.corrected_text,
+            "Saya nak join meetings di office dan check updated attachments yang sudah uploaded semalam.",
+        )
+        res_baku = self.pipeline_baku.process(inp)
+        self.assertEqual(
+            res_baku.corrected_text,
             "Saya hendak join meetings di office dan check updated attachments yang sudah uploaded semalam.",
         )
         for en_word in ("join", "meetings", "office", "check", "updated", "attachments", "uploaded"):
@@ -224,7 +235,8 @@ class TestPunctuationChecker(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.pipeline = PRPMPipeline(eight_word="lapan")
+        cls.pipeline = PRPMPipeline(eight_word="lapan", mode="annotation")
+        cls.pipeline_baku = PRPMPipeline(eight_word="lapan", mode="baku")
 
     def test_spacing_around_comma_and_period(self) -> None:
         inp = "saya beli buku ,pena ,dan kertas   di kedai"
@@ -239,6 +251,11 @@ class TestPunctuationChecker(unittest.TestCase):
         res = self.pipeline.process(inp)
         self.assertEqual(
             res.corrected_text,
+            "Mengapa kamu semua masih tak faham document yang saya upload semalam?",
+        )
+        res_baku = self.pipeline_baku.process(inp)
+        self.assertEqual(
+            res_baku.corrected_text,
             "Mengapa kamu semua masih tidak faham document yang saya upload semalam?",
         )
 
@@ -289,7 +306,8 @@ class TestCapitalizationChecker(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.pipeline = PRPMPipeline(eight_word="lapan")
+        cls.pipeline = PRPMPipeline(eight_word="lapan", mode="annotation")
+        cls.pipeline_baku = PRPMPipeline(eight_word="lapan", mode="baku")
 
     def test_proper_nouns_and_acronyms(self) -> None:
         inp = "kami memerlukan 25 orang sukarelawan untuk program kemaskini data prpm di universitas malaysia"
@@ -345,7 +363,8 @@ class TestEndToEndScenarios(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.pipeline = PRPMPipeline(eight_word="lapan")
+        cls.pipeline = PRPMPipeline(eight_word="lapan", mode="annotation")
+        cls.pipeline_baku = PRPMPipeline(eight_word="lapan", mode="baku")
 
     def test_full_complex_mixed_sentence(self) -> None:
         inp = (
@@ -355,6 +374,12 @@ class TestEndToEndScenarios(unittest.TestCase):
         res = self.pipeline.process(inp)
         self.assertEqual(
             res.corrected_text,
+            "Saya nak join meeting itu di Kuala Lumpur pada pukul lapan pagi, "
+            "apakah jadual dan seribu unit laptop sudah ready?",
+        )
+        res_baku = PRPMPipeline(eight_word="lapan", mode="baku").process(inp)
+        self.assertEqual(
+            res_baku.corrected_text,
             "Saya hendak join meeting itu di Kuala Lumpur pada pukul lapan pagi, "
             "apakah jadual dan seribu unit laptop sudah ready?",
         )
@@ -367,6 +392,83 @@ class TestEndToEndScenarios(unittest.TestCase):
         res_ws = self.pipeline.process("   ")
         self.assertEqual(res_ws.corrected_text, "   ")
         self.assertTrue(res_ws.is_valid_without_changes)
+
+
+class TestPMAnnotationRules(unittest.TestCase):
+    """Pengujian peraturan rasmi PM dari dokumen Customer Service Long Audio Annotation."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.pipeline = PRPMPipeline(eight_word="lapan", mode="annotation")
+
+    def test_group1_spoken_words_kept_as_spoken(self) -> None:
+        cases = [
+            ("saya tak tahu", "Saya tak tahu."),
+            ("satu je", "Satu je."),
+            ("saya nak tanya", "Saya nak tanya."),
+            ("kat sini ada", "Kat sini ada."),
+            ("tunggu jap", "Tunggu jap."),
+            ("pastu saya call balik", "Pastu saya call balik."),
+            ("boleh kot", "Boleh kot."),
+            ("polisi ni okey. income tu penting", "Polisi ni okey. Income tu penting."),
+            ("dah bayar", "Dah bayar."),
+            ("duduk sorang", "Duduk sorang."),
+            ("tak sure lah", "Tak sure lah."),
+        ]
+        for inp, expected in cases:
+            res = self.pipeline.process(inp)
+            self.assertEqual(res.corrected_text, expected)
+            self.assertEqual(res.unknown_words, [], f"Unexpected unknown_words for: {inp}")
+
+    def test_group2_accent_differences_standardized(self) -> None:
+        cases = [
+            ("ade , tapi tak banyak", "Ada, tapi tak banyak."),
+            ("saye nak tanya", "Saya nak tanya."),
+            ("ape yang boleh saye bantu.", "Apa yang boleh saya bantu?"),
+            ("kite tengok dulu", "Kita tengok dulu."),
+            ("kena ambik dulu", "Kena ambil dulu."),
+            ("nanti saye balek", "Nanti saya balik."),
+            ("he is flying a kite", "He is flying a kite."),
+        ]
+        for inp, expected in cases:
+            self.assertEqual(self.pipeline.process(inp).corrected_text, expected)
+
+    def test_overlap_tag_rules_spacing_and_punctuation(self) -> None:
+        # 1. Valid tanpa tanda baca
+        r1 = self.pipeline.process("I go to [OVERLAP/]school[/OVERLAP] today.")
+        self.assertEqual(r1.corrected_text, "I go to [OVERLAP/]school[/OVERLAP] today.")
+        self.assertTrue(r1.is_valid_without_changes)
+
+        # 2. Valid dengan tanda baca di dalam tag
+        r2 = self.pipeline.process("I go to school [OVERLAP/]today.[/OVERLAP]")
+        self.assertEqual(r2.corrected_text, "I go to school [OVERLAP/]today.[/OVERLAP]")
+        self.assertTrue(r2.is_valid_without_changes)
+
+        # 3. Salah spasi di dalam tag -> dibersihkan
+        r3 = self.pipeline.process("I go to [OVERLAP/] school [/OVERLAP] today.")
+        self.assertEqual(r3.corrected_text, "I go to [OVERLAP/]school[/OVERLAP] today.")
+
+        # 4. Salah tanda baca di luar tag -> dimasukkan ke dalam tag
+        r4 = self.pipeline.process("I go to school [OVERLAP/]today[/OVERLAP].")
+        self.assertEqual(r4.corrected_text, "I go to school [OVERLAP/]today.[/OVERLAP]")
+
+        # 5. Contoh Melayu + penambahan titik otomatis ke dalam tag penutup
+        r5 = self.pipeline.process("saya mahu menyemak baki [OVERLAP/]akaun saya[/OVERLAP]")
+        self.assertEqual(
+            r5.corrected_text,
+            "Saya mahu menyemak baki [OVERLAP/]akaun saya.[/OVERLAP]",
+        )
+
+        # 6. Ayat tanya diakhiri tag overlap + kalimat sambungan selepas [/OVERLAP]
+        r6 = self.pipeline.process("apakah [OVERLAP/]baki akaun saya[/OVERLAP]. terima kasih")
+        self.assertEqual(
+            r6.corrected_text,
+            "Apakah [OVERLAP/]baki akaun saya?[/OVERLAP] Terima kasih.",
+        )
+
+        # 7. Kapitalisasi awal kalimat di dalam [OVERLAP/]
+        r7 = self.pipeline.process("[OVERLAP/]saya[/OVERLAP] nak tanya")
+        self.assertEqual(r7.corrected_text, "[OVERLAP/]Saya[/OVERLAP] nak tanya.")
 
 
 if __name__ == "__main__":

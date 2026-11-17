@@ -1,8 +1,12 @@
 """
 Orkestrator Pipeline Utama Pemeriksa & Pembaku Kalimat Bahasa Melayu (PRPM Malaysia) Full Offline.
 Mengintegrasikan:
+0. Normalisasi & proteksi tag anotasi [OVERLAP/]...[/OVERLAP] sesuai peraturan PM.
 1. Konversi Angka ke Kalimat Terbilang Baku (1000 -> seribu, 800 -> lapan ratus / delapan ratus, RM1000 -> RM seribu, -5, 20%, 1,250.50).
-2. Pemeriksaan & Pembakuan Kata PRPM Malaysia + Bypass Kata Bahasa Inggris (Tidak Diganti) + Pelaporan Kata Tidak Dikenal.
+2. Pemeriksaan & Pembakuan Kata PRPM Malaysia:
+   - Mode 'annotation' (Default, peraturan PM): Kata lisan Group 1 (tak, nak, je, kat, jap, pastu, kot, ni, tu, dah, sorang, lah, kan) ditulis apa adanya; loghat Group 2 (ade, saye, ape, kite, ambik, balek) dibakukan.
+   - Mode 'baku': Pembakuan penuh PRPM DBP Malaysia.
+   - Kata Bahasa Inggris tidak diganti.
 3. Pemeriksaan Titik ('.'), Koma (','), dan Tanda Tanya ('?').
 4. Pemeriksaan Penggunaan Huruf Kapital & Non-Kapital mengikut Tatabahasa Dewan.
 """
@@ -16,12 +20,13 @@ from app.data.seed_lexicon import DB_PATH
 from app.engine.capitalization_checker import CapitalizationChecker
 from app.engine.lexicon_checker import LexiconChecker
 from app.engine.number_converter import NumberConverter
+from app.engine.overlap_handler import OverlapHandler
 from app.engine.punctuation_checker import PunctuationChecker
 
 
 @dataclass
 class CorrectionItem:
-    category: str  # 'PRPM_KATA', 'PRPM_MAJMUK', 'PRPM_EJAAN', 'ANGKA', 'TANDA_BACA', 'KAPITAL'
+    category: str  # 'OVERLAP_TAG', 'PRPM_KATA', 'PRPM_MAJMUK', 'PRPM_EJAAN', 'ANGKA', 'TANDA_BACA', 'KAPITAL'
     original: str
     replacement: str
     reason: str
@@ -56,11 +61,14 @@ class PRPMPipeline:
         db_path: str = DB_PATH,
         eight_word: str = "lapan",
         zero_word: str = "sifar",
+        mode: str = "annotation",
     ) -> None:
+        self.mode = mode if mode in ("annotation", "baku") else "annotation"
         self.lexicon_checker = LexiconChecker(db_path=db_path)
         if eight_word == "delapan":
             self.lexicon_checker.ms_standardization.pop("delapan", None)
             self.lexicon_checker.prpm_words.add("delapan")
+        self.overlap_handler = OverlapHandler()
         self.number_converter = NumberConverter(
             eight_word=eight_word, zero_word=zero_word
         )
@@ -86,7 +94,20 @@ class PRPMPipeline:
             )
 
         all_corrections: List[CorrectionItem] = []
-        working = text.strip()
+        raw_stripped = text.strip()
+        working = raw_stripped
+
+        # Tahap 0: Normalisasi & proteksi tag [OVERLAP/]...[/OVERLAP]
+        working, overlap_pre_issues = self.overlap_handler.prepare(working)
+        for oi in overlap_pre_issues:
+            all_corrections.append(
+                CorrectionItem(
+                    category="OVERLAP_TAG",
+                    original=oi.original,
+                    replacement=oi.replacement,
+                    reason=oi.reason,
+                )
+            )
 
         # Tahap 1: Konversi Angka ke Kalimat Terbilang
         working, num_issues = self.number_converter.convert_numbers_in_text(working)
@@ -102,7 +123,7 @@ class PRPMPipeline:
 
         # Tahap 2: Pemeriksaan Kata PRPM Malaysia & Deteksi Kata Bahasa Inggris (Tidak Diganti)
         working, lex_issues, english_kept, unknown_issues = (
-            self.lexicon_checker.check_and_standardize(working)
+            self.lexicon_checker.check_and_standardize(working, mode=self.mode)
         )
         for li in lex_issues:
             cat_map = {
@@ -152,8 +173,20 @@ class PRPMPipeline:
                 )
             )
 
+        # Tahap 5: Kembalikan tag [OVERLAP/]...[/OVERLAP] & masukkan tanda baca ke dalam [/OVERLAP]
+        working, overlap_post_issues = self.overlap_handler.finalize(working, raw_stripped)
+        for oi in overlap_post_issues:
+            all_corrections.append(
+                CorrectionItem(
+                    category="OVERLAP_TAG",
+                    original=oi.original,
+                    replacement=oi.replacement,
+                    reason=oi.reason,
+                )
+            )
+
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-        is_unchanged = working == text.strip() and len(all_corrections) == 0
+        is_unchanged = working == raw_stripped and len(all_corrections) == 0
 
         return PipelineResult(
             original_text=text,

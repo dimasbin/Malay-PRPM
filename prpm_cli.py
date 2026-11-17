@@ -60,6 +60,7 @@ class Colors:
 
 
 CATEGORY_BADGES = {
+    "OVERLAP_TAG": f"{Colors.MAGENTA}[TAG OVERLAP]{Colors.RESET}",
     "PRPM_KATA": f"{Colors.YELLOW}[PRPM KATA BAKU]{Colors.RESET}",
     "PRPM_MAJMUK": f"{Colors.MAGENTA}[PRPM KATA MAJMUK]{Colors.RESET}",
     "PRPM_EJAAN": f"{Colors.RED}[PRPM EJAAN]{Colors.RESET}",
@@ -139,11 +140,11 @@ def print_stats(db_path: str = DB_PATH) -> None:
 
 DEMO_SENTENCES: List[str] = [
     "saya nak join meeting itu di office pada pukul 8 pagi , apakah jadual sudah ready.",
+    "ade , tapi tak banyak. saye nak ambik barang dulu sebelum balek",
+    "I go to [OVERLAP/] school [/OVERLAP] today. Saya mahu menyemak baki [OVERLAP/]akaun saya[/OVERLAP].",
     "harga laptop itu RM1000 dan ada 800 unit yang sudah sold out",
     "pada hari isnin , mereka Pergi ke kuala lumpur untuk beri tahu jawatan kuasa tentang kerja sama ini",
-    "saya nak tanya pasal projek tu boleh tak",
     "saya tidak tahu di mana pejabat baru Google dan WhatsApp di selangor",
-    "dia cuba memparkir kereta dan mensokong cadangan itu disini",
 ]
 
 
@@ -157,6 +158,7 @@ def run_interactive_repl(pipeline: PRPMPipeline) -> None:
     print(f"  • Ketik kalimat langsung lalu tekan {Colors.BOLD}Enter{Colors.RESET} untuk memeriksa.")
     print(f"  • {Colors.YELLOW}:demo{Colors.RESET}                        -> Jalankan contoh kalimat uji coba.")
     print(f"  • {Colors.YELLOW}:stats{Colors.RESET}                       -> Lihat jumlah entri kamus offline.")
+    print(f"  • {Colors.YELLOW}:mode annotation|baku{Colors.RESET}        -> Pilih mode aturan (aktif: '{pipeline.mode}').")
     print(f"  • {Colors.YELLOW}:eight lapan|delapan{Colors.RESET}         -> Ubah ejaan angka 8 (aktif: '{pipeline.number_converter.eight_word}').")
     print(f"  • {Colors.YELLOW}:add-prpm <kata>{Colors.RESET}             -> Tambah kata baku PRPM ke kamus lokal.")
     print(f"  • {Colors.YELLOW}:add-baku <tak_baku> <baku>{Colors.RESET}  -> Tambah aturan pembakuan kata ke kamus lokal.")
@@ -188,11 +190,22 @@ def run_interactive_repl(pipeline: PRPMPipeline) -> None:
                 print_result(res)
             continue
 
+        if user_input.lower().startswith(":mode "):
+            new_mode = user_input.split(maxsplit=1)[1].strip().lower()
+            if new_mode in ("annotation", "baku"):
+                pipeline.mode = new_mode
+                print(f"{Colors.GREEN}✓ Mode aturan diatur ke: '{new_mode}'.{Colors.RESET}")
+            else:
+                print(f"{Colors.RED}Pilih ':mode annotation' atau ':mode baku'.{Colors.RESET}")
+            continue
+
         if user_input.lower().startswith(":eight "):
             mode = user_input.split(maxsplit=1)[1].strip().lower()
             if mode in ("lapan", "delapan"):
                 pipeline = PRPMPipeline(
-                    db_path=pipeline.lexicon_checker.db_path, eight_word=mode
+                    db_path=pipeline.lexicon_checker.db_path,
+                    eight_word=mode,
+                    mode=pipeline.mode,
                 )
                 print(f"{Colors.GREEN}✓ Ejaan angka 8 diatur ke: '{mode}'.{Colors.RESET}")
             else:
@@ -250,6 +263,12 @@ def main() -> int:
         "-o",
         "--output",
         help="Path berkas keluaran untuk menyimpan hasil pemrosesan batch.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["annotation", "baku"],
+        default="annotation",
+        help="Mode pembakuan: 'annotation' (default peraturan PM: kata lisan Group 1 dikekalkan) atau 'baku' (Full Baku PRPM).",
     )
     parser.add_argument(
         "--eight",
@@ -370,7 +389,7 @@ def main() -> int:
         print_stats(DB_PATH)
         return 0
 
-    pipeline = PRPMPipeline(db_path=DB_PATH, eight_word=args.eight)
+    pipeline = PRPMPipeline(db_path=DB_PATH, eight_word=args.eight, mode=args.mode)
 
     if args.add_prpm:
         pipeline.lexicon_checker.add_prpm_word(args.add_prpm)

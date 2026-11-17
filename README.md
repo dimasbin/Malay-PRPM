@@ -3,9 +3,12 @@
 Aplikasi berbasis **CLI (Command Line Interface)** yang berjalan **100% Full Offline** untuk memeriksa dan membakukan kalimat berbahasa Malaysia yang bercampur dengan Bahasa Inggris (*code-switching*), berdasarkan kaidah **PRPM (Pusat Rujukan Persuratan Melayu - DBP Malaysia)**.
 
 ## Fitur Utama
-1. **Validasi & Pembakuan Kata PRPM Malaysia (Full Baku)**:
-   - Membakukan kata tidak baku, bahasa pasar/slang Malaysia, dan kata serapan tidak baku ke standar Kamus Dewan / PRPM (contoh: `nak` $\rightarrow$ `hendak`, `tak` $\rightarrow$ `tidak`, `paham` $\rightarrow$ `faham`, `pikir` $\rightarrow$ `fikir`, `jadwal` $\rightarrow$ `jadual`, `universitas` $\rightarrow$ `universiti`).
-   - Mematuhi kaidah **15 Kata Majmuk Mantap DBP** (`kerja sama` $\rightarrow$ `kerjasama`, `jawatan kuasa` $\rightarrow$ `jawatankuasa`, `tanda tangan` $\rightarrow$ `tandatangan`) dan **Kata Majmuk Terpisah PRPM** (`kemaskini` $\rightarrow$ `kemas kini`, `temuduga` $\rightarrow$ `temu duga`).
+1. **Dua Mode Pembakuan (`--mode annotation` [Default] & `--mode baku`)**:
+   - **Mode `annotation` (Default, Peraturan PM Customer Service Audio)**:
+     - **Group 1 (*Write as spoken*)**: Kata lisan umum (`tak`, `je`, `nak`, `kat`, `jap`, `pastu`, `kot`, `ni`, `tu`, `dah`, `sorang`, `lah`, `kan`, `okey`, `tapi`, `dulu`) ditulis apa adanya.
+     - **Group 2 (*Accent differences*)**: Variasi sebutan loghat (`ade` $\rightarrow$ `ada`, `saye` $\rightarrow$ `saya`, `ape` $\rightarrow$ `apa`, `kite` $\rightarrow$ `kita`, `ambik` $\rightarrow$ `ambil`, `balek` $\rightarrow$ `balik`) dibakukan ke ejaan rasmi.
+     - **Tag `[OVERLAP/]...[/OVERLAP]`**: Spasi di dalam tag dibuang (`[OVERLAP/] school [/OVERLAP]` $\rightarrow$ `[OVERLAP/]school[/OVERLAP]`) dan tanda baca penutup dimasukkan ke dalam tag (`[OVERLAP/]today[/OVERLAP].` $\rightarrow$ `[OVERLAP/]today.[/OVERLAP]`).
+   - **Mode `baku` (`--mode baku`)**: Pembakuan penuh PRPM DBP Malaysia termasuk menukar kata lisan (`nak` $\rightarrow$ `hendak`, `tak` $\rightarrow$ `tidak`, `paham` $\rightarrow$ `faham`), **15 Kata Majmuk Mantap DBP**, **Kata Majmuk Terpisah PRPM**, serta peluluhan KPST.
 2. **Bypass Kata Campuran Bahasa Inggris (Tidak Diganti)**:
    - Dilengkapi kamus Bahasa Inggris offline beserta penganalisis infleksi (`-s`, `-es`, `-ed`, `-ing`, `-ly`) sehingga kata Bahasa Inggris di dalam kalimat tetap dipertahankan dan tidak dianggap salah eja.
 3. **Konversi Angka ke Kalimat Terbilang**:
@@ -27,7 +30,11 @@ python prpm_cli.py
 
 ### 2. Mode Satu Kalimat Langsung
 ```powershell
+# Default (Mode Annotation - Peraturan PM)
 python prpm_cli.py "saya nak join meeting itu di office pada pukul 8 pagi , apakah jadual sudah ready."
+
+# Mode Full Baku PRPM Malaysia
+python prpm_cli.py --mode baku "saya nak join meeting itu di office pada pukul 8 pagi , apakah jadual sudah ready."
 ```
 Jika ingin menggunakan ejaan `delapan` untuk angka `8`:
 ```powershell

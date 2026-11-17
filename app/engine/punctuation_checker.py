@@ -141,17 +141,21 @@ class PunctuationChecker:
             ending = parts[idx + 1] if (idx + 1) < len(parts) else ""
             idx += 2
 
-            if not sentence_body.strip():
-                if ending:
-                    rebuilt.append(ending)
+            if not sentence_body.strip(" \t\n\r\uE000\uE001"):
+                rebuilt.append(sentence_body + ending)
                 continue
 
             # Jika diakhiri elipsis, biarkan elipsis sebagai penutup
-            if sentence_body.rstrip().endswith(self._ELLIPSIS_TOKEN) and ending == "":
+            if sentence_body.rstrip(" \t\n\r\uE000\uE001").endswith(self._ELLIPSIS_TOKEN) and ending == "":
                 rebuilt.append(sentence_body)
                 continue
 
-            readable_body = sentence_body.replace(self._ABBR_TOKEN, ".").strip()
+            readable_body = (
+                sentence_body.replace(self._ABBR_TOKEN, ".")
+                .replace("\uE000", "")
+                .replace("\uE001", "")
+                .strip()
+            )
             is_question, q_trigger = self._is_interrogative_sentence(readable_body)
 
             if is_question:
@@ -232,9 +236,15 @@ class PunctuationChecker:
                 if not clause.startswith(f"{clause_words[0]}-{clause_words[0]}"):
                     return True, clause_words[0]
 
-        # 4. Penanda tanya di akhir kalimat ('... atau tidak', '..., bukan')
+        # 4. Penanda tanya di akhir kalimat ('... atau tidak', '... boleh tak', '..., bukan')
         if clean.endswith("atau tidak"):
             return True, "atau tidak"
+        m_tak = re.search(
+            r"\b((?:boleh|betul|jadi|sudah|ada|sempat|faham|nampak|tahu|ok|okey)\s+tak)$",
+            clean,
+        )
+        if m_tak:
+            return True, m_tak.group(1)
         if re.search(r",\s*(bukan|ya)$", clean):
             return True, clean.split(",")[-1].strip()
 

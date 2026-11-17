@@ -15,7 +15,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-from app.data.seed_lexicon import DB_PATH, init_database
+from app.data.seed_lexicon import DB_PATH, SPOKEN_ANNOTATION_WORDS, init_database
 from app.engine.morphology import MorphologyAnalyzer
 
 
@@ -50,6 +50,11 @@ class LexiconChecker:
         "faham", "nampak", "tahu", "mahu", "hendak", "nak",
         "dapat", "perlu", "wajar", "ok", "okey",
     )
+
+    _EN_DETERMINERS = {
+        "a", "an", "the", "my", "your", "his", "her", "their", "our",
+        "this", "that", "big", "small", "paper", "giant", "fly", "flying",
+    }
 
     def __init__(self, db_path: str = DB_PATH) -> None:
         self.db_path = init_database(db_path)
@@ -131,7 +136,7 @@ class LexiconChecker:
         self._rebuild_typo_index()
 
     def check_and_standardize(
-        self, text: str
+        self, text: str, mode: str = "annotation"
     ) -> Tuple[str, List[LexiconIssue], List[str], List[UnknownWordIssue]]:
         """
         Memeriksa penggunaan kata berdasarkan PRPM Malaysia dan mempertahankan kata Bahasa Inggris.
@@ -183,7 +188,7 @@ class LexiconChecker:
             text = pattern.sub(_replace_phrase, text)
 
         # Tahap 1B: Pembakuan Kontekstual ('pasal', '... boleh tak')
-        text = self._apply_contextual_rules(text, issues)
+        text = self._apply_contextual_rules(text, issues, mode=mode)
 
         # Tahap 2: Pemeriksaan Token demi Token
         token_pattern = re.compile(r"\b[A-Za-z]+(?:[-'][A-Za-z]+)*\b")
@@ -201,6 +206,21 @@ class LexiconChecker:
             # 2.0 Lindungi singkatan gelaran bertitik (contoh: Dr., En., Pn., Hj.) agar tidak tertukar dengan 'dr' -> 'dari'
             if lower_word in ("dr", "en", "pn", "hj", "hjh", "prof", "tn") and text[end : end + 1] == ".":
                 replacement = orig_word
+            # 2.0b Aturan PM Group 1 (Mode Annotation): Kata lisan umum ditulis apa adanya
+            elif mode == "annotation" and lower_word in SPOKEN_ANNOTATION_WORDS:
+                replacement = orig_word
+            # 2.0c Aturan PM Group 2 (Loghat 'ape' -> 'apa', 'kite' -> 'kita' bila bukan konteks Inggeris 'a kite'/'the ape')
+            elif lower_word in ("ape", "kite") and self._is_malay_accent_context(text[:start]):
+                target = "apa" if lower_word == "ape" else "kita"
+                replacement = self._preserve_initial_case(orig_word, target)
+                issues.append(
+                    LexiconIssue(
+                        original=orig_word,
+                        replacement=replacement,
+                        category="PRPM_BAKU",
+                        reason=f"Perbezaan loghat '{orig_word}' dibakukan kepada ejaan rasmi '{target}'.",
+                    )
+                )
             # 2.1 Cek apakah kata berada di kamus pembakuan langsung (ms_standardization)
             elif lower_word in self.ms_standardization:
                 std_word, reason = self.ms_standardization[lower_word]
@@ -264,7 +284,7 @@ class LexiconChecker:
                 )
             # 2.7 Cek salah ketik (typo) secara aman/konservatif, atau laporkan kata tidak dikenal
             else:
-                prefix_stripped = text[:start].strip()
+                prefix_stripped = text[:start].strip(" \t\n\r\uE000\uE001")
                 is_mid_title_case = (
                     bool(prefix_stripped)
                     and prefix_stripped[-1] not in (".", "?", "!")
@@ -314,7 +334,16 @@ class LexiconChecker:
         result_parts.append(text[last_idx:])
         return "".join(result_parts), issues, english_kept, unknown_words
 
-    def _apply_contextual_rules(self, text: str, issues: List[LexiconIssue]) -> str:
+    def _is_malay_accent_context(self, prefix_text: str) -> bool:
+        """Memastikan 'ape'/'kite' bukan kata benda Bahasa Inggeris seperti 'a kite' atau 'the ape'."""
+        prev_words = re.findall(r"\b[A-Za-z]+\b", prefix_text)
+        if not prev_words:
+            return True
+        return prev_words[-1].lower() not in self._EN_DETERMINERS
+
+    def _apply_contextual_rules(
+        self, text: str, issues: List[LexiconIssue], mode: str = "annotation"
+    ) -> str:
         """Menerapkan pembakuan kontekstual untuk 'pasal' dan '... tak' di akhir klausa."""
         # 1A. '<kata kerja bicara/tanya> pasal' -> '<kata kerja> tentang'
         verbs_re = "|".join(self._PASAL_TOPIC_VERBS)
@@ -371,26 +400,27 @@ class LexiconChecker:
 
         text = pasal_pat.sub(_repl_pasal_reason, text)
 
-        # 2. '<predikat tanya> tak' di akhir klausa/kalimat -> '<predikat> atau tidak'
-        prec_re = "|".join(self._CLAUSE_END_TAK_PRECEDERS)
-        end_tak_pat = re.compile(
-            rf"\b({prec_re})\s+(tak)(?=\s*(?:$|[.,?!]))", re.IGNORECASE
-        )
-
-        def _repl_end_tak(m: re.Match) -> str:
-            prec, tak_tok = m.group(1), m.group(2)
-            repl = "atau tidak"
-            issues.append(
-                LexiconIssue(
-                    original=f"{prec} {tak_tok}",
-                    replacement=f"{prec} {repl}",
-                    category="PRPM_BAKU",
-                    reason="Ungkapan tanya lisan di hujung ayat '... tak' dibakukan menjadi '... atau tidak'.",
-                )
+        # 2. '<predikat tanya> tak' di akhir klausa/kalimat -> '<predikat> atau tidak' (khusus mode baku)
+        if mode == "baku":
+            prec_re = "|".join(self._CLAUSE_END_TAK_PRECEDERS)
+            end_tak_pat = re.compile(
+                rf"\b({prec_re})\s+(tak)(?=\s*(?:$|[.,?!\uE001]))", re.IGNORECASE
             )
-            return f"{prec} {repl}"
 
-        text = end_tak_pat.sub(_repl_end_tak, text)
+            def _repl_end_tak(m: re.Match) -> str:
+                prec, tak_tok = m.group(1), m.group(2)
+                repl = "atau tidak"
+                issues.append(
+                    LexiconIssue(
+                        original=f"{prec} {tak_tok}",
+                        replacement=f"{prec} {repl}",
+                        category="PRPM_BAKU",
+                        reason="Ungkapan tanya lisan di hujung ayat '... tak' dibakukan menjadi '... atau tidak'.",
+                    )
+                )
+                return f"{prec} {repl}"
+
+            text = end_tak_pat.sub(_repl_end_tak, text)
         return text
 
     def _check_clitic_standardization(self, lower_word: str) -> Optional[Tuple[str, str]]:

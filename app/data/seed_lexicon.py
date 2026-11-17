@@ -16,6 +16,14 @@ from typing import Dict, List, Set, Tuple
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prpm_offline.db")
 
 # ============================================================================
+# 0. ATURAN PM GROUP 1: KATA LISAN UMUM (DITULIS APA ADANYA DI MODE ANNOTATION)
+# ============================================================================
+SPOKEN_ANNOTATION_WORDS: Set[str] = {
+    "tak", "je", "jer", "nak", "kat", "jap", "pastu", "lepastu",
+    "kot", "ni", "tu", "dah", "sorang", "lah", "kan", "okey", "tapi", "dulu",
+}
+
+# ============================================================================
 # 1. PEMETAAN PEMBAKUAN KATA MELAYU -> BAKU PRPM MALAYSIA (DBP)
 # ============================================================================
 # Mencakup:
@@ -172,7 +180,14 @@ MS_STANDARDIZATION: Dict[str, Tuple[str, str]] = {
     "sikit": ("sedikit", "Kata basahan 'sikit' dibakukan menjadi 'sedikit' mengikut PRPM DBP."),
     "ngam": ("sesuai", "Kata basahan 'ngam' dibakukan menjadi 'sesuai' mengikut PRPM DBP."),
     "kompeni": ("syarikat", "Kata percakapan 'kompeni' dibakukan menjadi 'syarikat' dalam konteks perniagaan PRPM DBP."),
+    "kot": ("agaknya", "Kata lisan 'kot' dibakukan menjadi 'agaknya' mengikut PRPM."),
+    "sorang": ("seorang", "Kata singkat lisan 'sorang' dibakukan menjadi 'seorang' mengikut PRPM."),
     "jap": ("sekejap", "Singkatan lisan 'jap' dibakukan menjadi 'sekejap' mengikut PRPM."),
+
+    # Aturan PM Group 2: Perbezaan Loghat / Aksen -> Ejaan Baku Rasmi
+    "ade": ("ada", "Perbezaan loghat 'ade' dibakukan kepada ejaan rasmi 'ada'."),
+    "saye": ("saya", "Perbezaan loghat 'saye' dibakukan kepada ejaan rasmi 'saya'."),
+    "balek": ("balik", "Perbezaan loghat 'balek' dibakukan kepada ejaan rasmi 'balik'."),
     "camni": ("begini", "Kata pasar 'camni' dibakukan menjadi 'begini' mengikut PRPM."),
     "camtu": ("begitu", "Kata pasar 'camtu' dibakukan menjadi 'begitu' mengikut PRPM."),
     "macamni": ("begini", "Kata pasar 'macamni' dibakukan menjadi 'begini' mengikut PRPM."),
@@ -332,7 +347,7 @@ PRPM_WORDS: Set[str] = {
     "parkir", "risau", "bosan", "kecewa", "gelak", "ketawa", "tangis", "mandi", "masak", "pening",
     "demam", "batuk", "selesema", "cabut", "ketuk", "buang", "campak", "peluk", "kejut", "hairan",
     "celsius", "peratus", "bajet", "diskaun", "bin", "binti", "encik", "haji", "hajah", "tun",
-    "bila-bila", "apa-apa", "mana-mana", "mengenai",
+    "bila-bila", "apa-apa", "mana-mana", "mengenai", "okey",
 }
 
 # ============================================================================

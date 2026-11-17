@@ -42,6 +42,21 @@ class TestPRPMCLI(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(
             proc.stdout.strip(),
+            "Saya nak join meeting itu pada pukul lapan pagi, apakah jadual sudah ready?",
+        )
+
+    def test_cli_mode_baku_flag(self) -> None:
+        proc = self._run_cli(
+            [
+                "--mode",
+                "baku",
+                "saya nak join meeting itu pada pukul 8 pagi , apakah jadual sudah ready.",
+                "-q",
+            ]
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(
+            proc.stdout.strip(),
             "Saya hendak join meeting itu pada pukul lapan pagi, apakah jadual sudah ready?",
         )
 
@@ -94,7 +109,7 @@ class TestPRPMCLI(unittest.TestCase):
             self.assertEqual(
                 lines,
                 [
-                    "Saya hendak check email sekarang.",
+                    "Saya nak check email sekarang.",
                     "Apakah jumlahnya lapan ratus unit?",
                 ],
             )
@@ -122,7 +137,7 @@ class TestPRPMCLI(unittest.TestCase):
             res = pipeline.process("saya nak semak bajet server kubernetes untuk 1000 pengguna")
             self.assertEqual(
                 res.corrected_text,
-                "Saya hendak semak belanjawan server kubernetes untuk seribu pengguna.",
+                "Saya nak semak belanjawan server kubernetes untuk seribu pengguna.",
             )
             self.assertIn("kubernetes", res.english_words_preserved)
 
