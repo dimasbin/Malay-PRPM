@@ -14,7 +14,8 @@ import sys
 import tempfile
 import unittest
 
-from app.data.seed_lexicon import init_database
+from app.data.lexicon_sync import import_proper_nouns_from_file, import_wordlist_file
+from app.data.seed_lexicon import init_database, upgrade_seed_database
 from app.engine.pipeline import PRPMPipeline
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -124,6 +125,37 @@ class TestPRPMCLI(unittest.TestCase):
                 "Saya hendak semak belanjawan server kubernetes untuk seribu pengguna.",
             )
             self.assertIn("kubernetes", res.english_words_preserved)
+
+    def test_cli_stats_flag(self) -> None:
+        proc = self._run_cli(["--stats"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("prpm_words", proc.stdout)
+
+    def test_isolated_dic_import_and_upgrade_preserves_user_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_db = os.path.join(tmpdir, "sync_test.db")
+            dic_path = os.path.join(tmpdir, "sample_ms.dic")
+            init_database(temp_db, force_rebuild=True)
+
+            pipeline = PRPMPipeline(db_path=temp_db)
+            pipeline.lexicon_checker.add_prpm_word("userkustom")
+
+            with open(dic_path, "w", encoding="utf-8") as f:
+                f.write("#4\n")
+                f.write("rumah/Dk\n")
+                f.write("in\n")
+                f.write("sikit\n")
+                f.write("Zulfaqar/A\n")
+
+            _, _ = import_wordlist_file(temp_db, dic_path, target="prpm", source="sync")
+            _, _ = import_proper_nouns_from_file(temp_db, dic_path, source="sync")
+            upgrade_seed_database(temp_db)
+
+            reloaded = PRPMPipeline(db_path=temp_db)
+            self.assertIn("userkustom", reloaded.lexicon_checker.prpm_words)
+            self.assertNotIn("sikit", reloaded.lexicon_checker.prpm_words)
+            self.assertNotIn("in", reloaded.lexicon_checker.prpm_words)
+            self.assertIn("zulfaqar", reloaded.lexicon_checker.proper_nouns)
 
 
 if __name__ == "__main__":

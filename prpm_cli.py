@@ -4,11 +4,12 @@ Aplikasi CLI (Command Line Interface) Full Offline:
 Pemeriksa & Pembaku Kalimat Bahasa Melayu (PRPM Malaysia) + Campuran Bahasa Inggris.
 
 Fitur:
-1. Pemeriksaan & pembakuan kata berdasarkan PRPM Malaysia (Full Baku).
+1. Pemeriksaan & pembakuan kata berdasarkan PRPM Malaysia (Full Baku + hukum KPST + kata sendi di/ke).
 2. Kata campuran Bahasa Inggris dikenali dan TIDAK DIGANTI (tetap dipertahankan).
-3. Konversi angka menjadi kalimat terbilang (1000 -> seribu, 800 -> lapan ratus / delapan ratus).
+3. Konversi angka menjadi kalimat terbilang (1000 -> seribu, 800 -> lapan ratus / delapan ratus, RM1000 -> RM seribu).
 4. Pemeriksaan tanda baca titik ('.'), koma (','), dan tanda tanya ('?').
-5. Pemeriksaan penggunaan huruf kapital dan non-kapital.
+5. Pemeriksaan penggunaan huruf kapital dan non-kapital mengikut Tatabahasa Dewan.
+6. Impor/sinkronisasi leksikon open-source ke database SQLite lokal agar tetap 100% Full Offline.
 """
 
 from __future__ import annotations
@@ -19,7 +20,13 @@ import os
 import sys
 from typing import List
 
-from app.data.seed_lexicon import DB_PATH, init_database
+from app.data.lexicon_sync import import_wordlist_file, sync_online_lexicons
+from app.data.seed_lexicon import (
+    DB_PATH,
+    get_database_stats,
+    init_database,
+    upgrade_seed_database,
+)
 from app.engine.pipeline import PipelineResult, PRPMPipeline
 
 
@@ -40,7 +47,6 @@ def _enable_windows_ansi() -> None:
         pass
 
 
-# Kode Warna ANSI Terminal
 class Colors:
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -76,6 +82,10 @@ def print_result(res: PipelineResult, use_color: bool = True) -> None:
                 print(f"  {idx}. [{c.category}] '{c.original}' -> '{c.replacement}' | {c.reason}")
         else:
             print("Status         : Sudah baku (Tidak ada kesalahan ditemukan).")
+        if res.unknown_words:
+            print("Kata Tidak Dikenal:")
+            for uw in res.unknown_words:
+                print(f"  - '{uw.word}': {uw.reason}")
         print("-" * 76)
         return
 
@@ -107,15 +117,33 @@ def print_result(res: PipelineResult, use_color: bool = True) -> None:
         print(
             f"\n{Colors.GREEN}✓ Kalimat sudah mematuhi kaidah baku PRPM Malaysia ({res.processing_time_ms} ms).{Colors.RESET}"
         )
+
+    if res.unknown_words:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Peringatan Kata Tidak Dikenal ({len(res.unknown_words)}):{Colors.RESET}")
+        for uw in res.unknown_words:
+            print(f"  {Colors.YELLOW}[PERINGATAN KATA TIDAK DIKENAL]{Colors.RESET} '{uw.word}' -> {uw.reason}")
+
     print(f"{Colors.DIM}{'─' * 76}{Colors.RESET}")
+
+
+def print_stats(db_path: str = DB_PATH) -> None:
+    stats = get_database_stats(db_path)
+    print("\nStatistik Basis Data Kamus Offline (prpm_offline.db):")
+    print(f"  • Kata Baku PRPM (prpm_words)        : {stats['prpm_words']:,}")
+    print(f"  • Aturan Pembakuan (ms_standardization): {stats['ms_standardization']:,}")
+    print(f"  • Kata Majmuk Mantap (compound_rules): {stats['compound_rules']:,}")
+    print(f"  • Leksikon Inggris (english_words)   : {stats['english_words']:,}")
+    print(f"  • Kata Nama Khas (proper_nouns)      : {stats['proper_nouns']:,}")
+    print(f"  • Akronim Rasmi (acronyms)           : {stats['acronyms']:,}\n")
 
 
 DEMO_SENTENCES: List[str] = [
     "saya nak join meeting itu di office pada pukul 8 pagi , apakah jadual sudah ready.",
-    "harga laptop itu 1000 ringgit dan ada 800 unit yang sudah sold out",
+    "harga laptop itu RM1000 dan ada 800 unit yang sudah sold out",
     "pada hari isnin , mereka Pergi ke kuala lumpur untuk beri tahu jawatan kuasa tentang kerja sama ini",
-    "kenapa korang masih tak paham document yang saya upload semalam..",
-    "kami memerlukan 25 orang sukarelawan untuk program kemaskini data di universitas malaysia",
+    "saya nak tanya pasal projek tu boleh tak",
+    "saya tidak tahu di mana pejabat baru Google dan WhatsApp di selangor",
+    "dia cuba memparkir kereta dan mensokong cadangan itu disini",
 ]
 
 
@@ -127,7 +155,8 @@ def run_interactive_repl(pipeline: PRPMPipeline) -> None:
     print(f"{Colors.CYAN}{Colors.BOLD}============================================================================{Colors.RESET}")
     print("Panduan Perintah:")
     print(f"  • Ketik kalimat langsung lalu tekan {Colors.BOLD}Enter{Colors.RESET} untuk memeriksa.")
-    print(f"  • {Colors.YELLOW}:demo{Colors.RESET}                        -> Jalankan 5 contoh kalimat uji coba.")
+    print(f"  • {Colors.YELLOW}:demo{Colors.RESET}                        -> Jalankan contoh kalimat uji coba.")
+    print(f"  • {Colors.YELLOW}:stats{Colors.RESET}                       -> Lihat jumlah entri kamus offline.")
     print(f"  • {Colors.YELLOW}:eight lapan|delapan{Colors.RESET}         -> Ubah ejaan angka 8 (aktif: '{pipeline.number_converter.eight_word}').")
     print(f"  • {Colors.YELLOW}:add-prpm <kata>{Colors.RESET}             -> Tambah kata baku PRPM ke kamus lokal.")
     print(f"  • {Colors.YELLOW}:add-baku <tak_baku> <baku>{Colors.RESET}  -> Tambah aturan pembakuan kata ke kamus lokal.")
@@ -148,6 +177,10 @@ def run_interactive_repl(pipeline: PRPMPipeline) -> None:
             print("Terima kasih. Aplikasi ditutup.")
             break
 
+        if user_input.lower() == ":stats":
+            print_stats(pipeline.lexicon_checker.db_path)
+            continue
+
         if user_input.lower() == ":demo":
             print(f"\n{Colors.CYAN}Menjalankan {len(DEMO_SENTENCES)} kalimat demo...{Colors.RESET}")
             for s in DEMO_SENTENCES:
@@ -158,7 +191,9 @@ def run_interactive_repl(pipeline: PRPMPipeline) -> None:
         if user_input.lower().startswith(":eight "):
             mode = user_input.split(maxsplit=1)[1].strip().lower()
             if mode in ("lapan", "delapan"):
-                pipeline = PRPMPipeline(db_path=DB_PATH, eight_word=mode)
+                pipeline = PRPMPipeline(
+                    db_path=pipeline.lexicon_checker.db_path, eight_word=mode
+                )
                 print(f"{Colors.GREEN}✓ Ejaan angka 8 diatur ke: '{mode}'.{Colors.RESET}")
             else:
                 print(f"{Colors.RED}Pilih ':eight lapan' atau ':eight delapan'.{Colors.RESET}")
@@ -255,9 +290,34 @@ def main() -> int:
         help="Tambahkan kata Bahasa Inggris ke whitelist database offline.",
     )
     parser.add_argument(
+        "--import-dic",
+        metavar="PATH",
+        help="Impor daftar kata Melayu (.dic Hunspell atau .txt) ke database offline.",
+    )
+    parser.add_argument(
+        "--import-en",
+        metavar="PATH",
+        help="Impor daftar kata Bahasa Inggris (.dic atau .txt) ke database offline.",
+    )
+    parser.add_argument(
+        "--sync-lexicon",
+        action="store_true",
+        help="Sinkronkan kamus Melayu (hunspell-ms) & Inggris (LibreOffice) dari GitHub ke database lokal.",
+    )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Tampilkan jumlah entri kamus pada database offline.",
+    )
+    parser.add_argument(
+        "--upgrade-db",
+        action="store_true",
+        help="Perbarui kosakata bawaan ('seed') tanpa menghapus tambahan pengguna & sinkronisasi.",
+    )
+    parser.add_argument(
         "--rebuild-db",
         action="store_true",
-        help="Bangun ulang database kamus SQLite offline ke kondisi awal.",
+        help="Bangun ulang database kamus SQLite offline dari nol (menghapus semua tambahan).",
     )
 
     args = parser.parse_args()
@@ -265,6 +325,49 @@ def main() -> int:
     if args.rebuild_db:
         path = init_database(DB_PATH, force_rebuild=True)
         print(f"Database kamus PRPM offline berhasil dibangun ulang di: {path}")
+        return 0
+
+    if args.upgrade_db:
+        path = upgrade_seed_database(DB_PATH)
+        print(f"Kosakata bawaan pada database '{path}' berhasil diperbarui tanpa menghapus data pengguna.")
+        return 0
+
+    if args.import_dic:
+        try:
+            parsed, added = import_wordlist_file(DB_PATH, args.import_dic, target="prpm", source="user")
+            print(f"✓ Impor kamus PRPM selesai: {parsed:,} kata terbaca, {added:,} kata baru ditambahkan.")
+            return 0
+        except Exception as exc:
+            print(f"Error impor PRPM: {exc}", file=sys.stderr)
+            return 1
+
+    if args.import_en:
+        try:
+            parsed, added = import_wordlist_file(DB_PATH, args.import_en, target="english", source="user")
+            print(f"✓ Impor kamus Inggris selesai: {parsed:,} kata terbaca, {added:,} kata baru ditambahkan.")
+            return 0
+        except Exception as exc:
+            print(f"Error impor Inggris: {exc}", file=sys.stderr)
+            return 1
+
+    if args.sync_lexicon:
+        try:
+            print("Menyinkronkan leksikon open-source (hunspell-ms & LibreOffice en_GB) ke database lokal...")
+            res_sync = sync_online_lexicons(DB_PATH)
+            ms_parsed, ms_added = res_sync["prpm_words"]
+            en_parsed, en_added = res_sync["english_words"]
+            pn_parsed, pn_added = res_sync.get("proper_nouns", (0, 0))
+            print(f"✓ PRPM Melayu    : {ms_parsed:,} kata diproses, {ms_added:,} kata baru ditambahkan.")
+            print(f"✓ Inggris        : {en_parsed:,} kata diproses, {en_added:,} kata baru ditambahkan.")
+            print(f"✓ Kata Nama Khas : {pn_parsed:,} kata diproses, {pn_added:,} kata baru ditambahkan.")
+            print_stats(DB_PATH)
+            return 0
+        except Exception as exc:
+            print(f"Error sinkronisasi online (pastikan koneksi internet tersedia): {exc}", file=sys.stderr)
+            return 1
+
+    if args.stats:
+        print_stats(DB_PATH)
         return 0
 
     pipeline = PRPMPipeline(db_path=DB_PATH, eight_word=args.eight)

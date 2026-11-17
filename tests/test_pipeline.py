@@ -66,6 +66,16 @@ class TestNumberConverter(unittest.TestCase):
             "Kadar inflasi meningkat kepada dua belas perpuluhan sifar lima peratus.",
         )
 
+    def test_rm_currency_negative_percent_and_combined_thousands_decimal(self) -> None:
+        inp = "suhu hari ini -5 darjah celsius dan harganya RM1000 atau RM 1,250.50 atau RM500.00 dengan diskaun 20%"
+        res = self.pipeline_baku.process(inp)
+        self.assertEqual(
+            res.corrected_text,
+            "Suhu hari ini negatif lima darjah celsius dan harganya RM seribu atau "
+            "RM seribu dua ratus lima puluh perpuluhan lima sifar atau RM lima ratus "
+            "dengan diskaun dua puluh peratus.",
+        )
+
 
 class TestPRPMStandardizationAndMorphology(unittest.TestCase):
     """Pengujian pembakuan kata PRPM Malaysia, kata majmuk, morfologi, dan pembetulan ejaan."""
@@ -131,6 +141,46 @@ class TestPRPMStandardizationAndMorphology(unittest.TestCase):
             res.corrected_text,
             "Pegawai itu berada di pejabat untuk menyemak dokumen.",
         )
+
+    def test_daily_words_not_corrupted_by_typo_checker(self) -> None:
+        inp = "saya hendak balik rumah kerana lapar dan penat serta dia cakap semua benda ok"
+        res = self.pipeline.process(inp)
+        self.assertEqual(
+            res.corrected_text,
+            "Saya hendak balik rumah kerana lapar dan penat serta dia cakap semua benda ok.",
+        )
+
+    def test_basahan_sikit_ngam_kompeni_and_di_ke_prepositions(self) -> None:
+        inp = "sikit sahaja wang di kompeni itu yang ngam untuk kerja disini bukan disana"
+        res = self.pipeline.process(inp)
+        self.assertEqual(
+            res.corrected_text,
+            "Sedikit sahaja wang di syarikat itu yang sesuai untuk kerja di sini bukan di sana.",
+        )
+
+    def test_contextual_pasal_and_boleh_tak(self) -> None:
+        self.assertEqual(
+            self.pipeline.process("saya nak tanya pasal projek tu boleh tak").corrected_text,
+            "Saya hendak tanya tentang projek itu boleh atau tidak?",
+        )
+        self.assertEqual(
+            self.pipeline.process("pasal dia sakit, dia tidak hadir ke pejabat").corrected_text,
+            "Kerana dia sakit, dia tidak hadir ke pejabat.",
+        )
+
+    def test_kpst_assimilation_corrections_and_exceptions(self) -> None:
+        inp = "dia cuba memparkir dan mensokong serta mentulis dan mengkira kos untuk memproses data"
+        res = self.pipeline.process(inp)
+        self.assertEqual(
+            res.corrected_text,
+            "Dia cuba memarkir dan menyokong serta menulis dan mengira kos untuk memproses data.",
+        )
+
+    def test_unknown_word_reported_without_forced_change(self) -> None:
+        inp = "dia ngamak di pejabat"
+        res = self.pipeline.process(inp)
+        self.assertEqual(res.corrected_text, "Dia ngamak di pejabat.")
+        self.assertIn("ngamak", [u.word for u in res.unknown_words])
 
 
 class TestEnglishPreservation(unittest.TestCase):
@@ -218,6 +268,21 @@ class TestPunctuationChecker(unittest.TestCase):
             "Saya sudah sampai di pejabat, tetapi bilik masih tutup. Bilakah meeting akan bermula?",
         )
 
+    def test_indirect_di_mana_stays_declarative_and_direct_becomes_question(self) -> None:
+        self.assertEqual(
+            self.pipeline.process("saya tidak tahu di mana pejabat baru itu").corrected_text,
+            "Saya tidak tahu di mana pejabat baru itu.",
+        )
+        self.assertEqual(
+            self.pipeline.process("di mana pejabat baru itu").corrected_text,
+            "Di mana pejabat baru itu?",
+        )
+
+    def test_ellipsis_and_title_abbreviation_dot(self) -> None:
+        inp = "saya hendak jumpa Dr. Ahmad nanti..."
+        res = self.pipeline.process(inp)
+        self.assertEqual(res.corrected_text, "Saya hendak jumpa Dr. Ahmad nanti...")
+
 
 class TestCapitalizationChecker(unittest.TestCase):
     """Pengujian huruf kapital dan non-kapital."""
@@ -256,6 +321,22 @@ class TestCapitalizationChecker(unittest.TestCase):
         self.assertEqual(
             res.corrected_text,
             "Sebenarnya I'm happy kerana I sudah selesai review report.",
+        )
+
+    def test_brands_names_titles_and_lowercase_i_contraction(self) -> None:
+        inp = "i'm going to meet Dr. Ahmad dan Encik Zulfaqar pakai Google Chrome dan WhatsApp di office"
+        res = self.pipeline.process(inp)
+        self.assertEqual(
+            res.corrected_text,
+            "I'm going to meet Dr. Ahmad dan Encik Zulfaqar pakai Google Chrome dan WhatsApp di office.",
+        )
+
+    def test_bin_binti_and_common_encik_puan(self) -> None:
+        inp = "Muhammad Bin Abdullah bekerja dengan puan itu di Cyberjaya"
+        res = self.pipeline.process(inp)
+        self.assertEqual(
+            res.corrected_text,
+            "Muhammad bin Abdullah bekerja dengan puan itu di Cyberjaya.",
         )
 
 

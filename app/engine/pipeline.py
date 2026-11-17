@@ -1,10 +1,10 @@
 """
 Orkestrator Pipeline Utama Pemeriksa & Pembaku Kalimat Bahasa Melayu (PRPM Malaysia) Full Offline.
 Mengintegrasikan:
-1. Konversi Angka ke Kalimat Terbilang Baku (1000 -> seribu, 800 -> lapan ratus / delapan ratus).
-2. Pemeriksaan & Pembakuan Kata PRPM Malaysia + Bypass Kata Bahasa Inggris (Tidak Diganti).
+1. Konversi Angka ke Kalimat Terbilang Baku (1000 -> seribu, 800 -> lapan ratus / delapan ratus, RM1000 -> RM seribu, -5, 20%, 1,250.50).
+2. Pemeriksaan & Pembakuan Kata PRPM Malaysia + Bypass Kata Bahasa Inggris (Tidak Diganti) + Pelaporan Kata Tidak Dikenal.
 3. Pemeriksaan Titik ('.'), Koma (','), dan Tanda Tanya ('?').
-4. Pemeriksaan Penggunaan Huruf Kapital & Non-Kapital.
+4. Pemeriksaan Penggunaan Huruf Kapital & Non-Kapital mengikut Tatabahasa Dewan.
 """
 
 from __future__ import annotations
@@ -28,12 +28,20 @@ class CorrectionItem:
 
 
 @dataclass
+class UnknownWordItem:
+    word: str
+    suggestions: List[str] = field(default_factory=list)
+    reason: str = ""
+
+
+@dataclass
 class PipelineResult:
     original_text: str
     corrected_text: str
     is_valid_without_changes: bool
     english_words_preserved: List[str] = field(default_factory=list)
     corrections: List[CorrectionItem] = field(default_factory=list)
+    unknown_words: List[UnknownWordItem] = field(default_factory=list)
     processing_time_ms: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -60,6 +68,9 @@ class PRPMPipeline:
         self.capitalization_checker = CapitalizationChecker(
             proper_nouns=self.lexicon_checker.proper_nouns,
             acronyms=self.lexicon_checker.acronyms,
+            prpm_words=self.lexicon_checker.prpm_words,
+            english_words=self.lexicon_checker.english_words,
+            morphology=self.lexicon_checker.morphology,
         )
 
     def process(self, text: str) -> PipelineResult:
@@ -90,8 +101,8 @@ class PRPMPipeline:
             )
 
         # Tahap 2: Pemeriksaan Kata PRPM Malaysia & Deteksi Kata Bahasa Inggris (Tidak Diganti)
-        working, lex_issues, english_kept = self.lexicon_checker.check_and_standardize(
-            working
+        working, lex_issues, english_kept, unknown_issues = (
+            self.lexicon_checker.check_and_standardize(working)
         )
         for li in lex_issues:
             cat_map = {
@@ -107,6 +118,15 @@ class PRPMPipeline:
                     reason=li.reason,
                 )
             )
+
+        unknown_items = [
+            UnknownWordItem(
+                word=ui.word,
+                suggestions=ui.suggestions,
+                reason=ui.reason,
+            )
+            for ui in unknown_issues
+        ]
 
         # Tahap 3: Pemeriksaan Tanda Baca (Titik, Koma, Tanya)
         working, punct_issues = self.punctuation_checker.check_and_fix(working)
@@ -141,5 +161,6 @@ class PRPMPipeline:
             is_valid_without_changes=is_unchanged,
             english_words_preserved=english_kept,
             corrections=all_corrections,
+            unknown_words=unknown_items,
             processing_time_ms=elapsed_ms,
         )

@@ -44,16 +44,29 @@ python prpm_cli.py --demo
 python prpm_cli.py --file input.txt --output hasil_baku.txt
 ```
 
-### 5. Menambah Kosakata ke Database Offline
+### 5. Mengelola & Menyinkronkan Kamus Offline (`prpm_offline.db`)
 ```powershell
+# Lihat statistik isi database kamus offline
+python prpm_cli.py --stats
+
 # Tambah kata baku PRPM baru
 python prpm_cli.py --add-prpm "belanjawan"
 
 # Tambah aturan pembakuan kata (tidak baku -> baku PRPM)
-python prpm_cli.py --add-norm "bawak" "bawa"
+python prpm_cli.py --add-norm "ngam" "sesuai"
 
 # Tambah kata Bahasa Inggris ke whitelist (agar tidak diganti)
 python prpm_cli.py --add-en "spreadsheet"
+
+# Impor berkas wordlist lokal (.dic Hunspell atau .txt)
+python prpm_cli.py --import-dic path\ke\ms_MY.dic
+python prpm_cli.py --import-en path\ke\en_GB.dic
+
+# Sinkronkan kamus Melayu (hunspell-ms) & Inggris (LibreOffice en_GB) saat online
+python prpm_cli.py --sync-lexicon
+
+# Perbarui kamus bawaan tanpa menghapus entri tambahan pengguna
+python prpm_cli.py --upgrade-db
 ```
 
 ### 6. Menjalankan Unit Test

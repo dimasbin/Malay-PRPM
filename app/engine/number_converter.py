@@ -1,11 +1,13 @@
 """
 Modul Konversi Angka ke Kalimat Terbilang (Bahasa Melayu PRPM & Kustom).
 Mengubah angka numerik di dalam kalimat menjadi kata bilangan secara full offline.
-Contoh:
-- 1000 -> seribu
-- 800 -> delapan ratus (mode 'delapan') / lapan ratus (mode 'lapan' PRPM Malaysia)
-- ke-2 -> kedua
-- 3.5 -> tiga perpuluhan lima
+Mendukung:
+- Bilangan bulat & ribuan/jutaan/bilion: 1000 -> seribu, 800 -> lapan ratus (atau delapan ratus)
+- Bilangan bertingkat: ke-1 -> pertama, ke-2 -> kedua
+- Ribuan & perpuluhan gabungan: 1,250.50 -> seribu dua ratus lima puluh perpuluhan lima sifar
+- Mata wang Ringgit Malaysia: RM1000 / RM 1000 / RM1000.00 -> RM seribu
+- Bilangan negatif: -5 -> negatif lima
+- Peratusan: 20% -> dua puluh peratus
 """
 
 from __future__ import annotations
@@ -25,6 +27,16 @@ class NumberConversionIssue:
 
 class NumberConverter:
     """Konverter angka ke kalimat terbilang Bahasa Melayu."""
+
+    _NUM_CORE_PATTERN = (
+        r"(?:"
+        r"\d{1,3}(?:,\d{3})+\.\d+"   # gabungan ribuan koma + desimal (1,250.50)
+        r"|\d{1,3}(?:,\d{3})+"       # ribuan koma (1,000)
+        r"|\d{1,3}(?:\.\d{3})+"      # ribuan titik (10.000)
+        r"|\d+[\.,](?:\d{1,2}|\d{4,})"  # desimal (3.5, 12.05)
+        r"|\d+"                      # bilangan bulat
+        r")"
+    )
 
     def __init__(self, eight_word: str = "lapan", zero_word: str = "sifar") -> None:
         """
@@ -120,7 +132,7 @@ class NumberConverter:
 
     def decimal_to_words(self, int_part_str: str, frac_part_str: str) -> str:
         """Mengubah angka desimal menjadi teks terbilang (menggunakan 'perpuluhan')."""
-        int_val = int(int_part_str)
+        int_val = int(int_part_str.replace(",", "").replace(".", ""))
         int_words = self.int_to_words(int_val)
         frac_words_list = []
         for ch in frac_part_str:
@@ -136,29 +148,39 @@ class NumberConverter:
             return "pertama"
         return f"ke{self.int_to_words(n)}"
 
+    def _numeric_str_to_words(self, num_str: str, strip_zero_cents: bool = False) -> str:
+        """Mengubah representasi angka string (termasuk ribuan & perpuluhan) menjadi kalimat terbilang."""
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+\.\d+", num_str):
+            int_part, frac_part = num_str.split(".", 1)
+            if strip_zero_cents and set(frac_part) == {"0"}:
+                return self.int_to_words(int(int_part.replace(",", "")))
+            return self.decimal_to_words(int_part, frac_part)
+
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+", num_str):
+            return self.int_to_words(int(num_str.replace(",", "")))
+
+        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", num_str):
+            return self.int_to_words(int(num_str.replace(".", "")))
+
+        if re.fullmatch(r"\d+[\.,](?:\d{1,2}|\d{4,})", num_str):
+            sep = "." if "." in num_str else ","
+            int_part, frac_part = num_str.split(sep, 1)
+            if strip_zero_cents and set(frac_part) == {"0"}:
+                return self.int_to_words(int(int_part))
+            return self.decimal_to_words(int_part, frac_part)
+
+        return self.int_to_words(int(num_str))
+
     def convert_numbers_in_text(self, text: str) -> Tuple[str, List[NumberConversionIssue]]:
-        """
-        Mendeteksi semua ekspresi angka di dalam teks dan mengubahnya menjadi kalimat terbilang.
-        Mendukung:
-        - Bilangan tingkat: ke-1, ke-2, ke-100
-        - Ribuan berpemisah koma atau titik: 1,000 / 1,250,000 / 10.000
-        - Desimal: 3.5 / 12.75
-        - Bilangan bulat biasa: 1000, 800, 25
-        """
+        """Mendeteksi dan mengonversi seluruh ekspresi angka di dalam teks menjadi kalimat terbilang."""
         issues: List[NumberConversionIssue] = []
 
-        # Regex gabungan dengan urutan prioritas:
-        # 1. Ordinal: \b[kK]e-(\d+)\b
-        # 2. Ribuan dengan koma: \b\d{1,3}(?:,\d{3})+\b
-        # 3. Ribuan dengan titik: \b\d{1,3}(?:\.\d{3})+\b (hanya jika grup 3 digit)
-        # 4. Desimal dengan titik/koma (bukan ribuan 3 digit): \b(\d+)[\.,](\d{1,2}|\d{4,})\b
-        # 5. Bilangan bulat standar: \b\d+\b
         pattern = re.compile(
-            r"(?P<ordinal>\b[kK]e-(?P<ord_num>\d+)\b)"
-            r"|(?P<thousand_comma>\b\d{1,3}(?:,\d{3})+\b)"
-            r"|(?P<thousand_dot>\b\d{1,3}(?:\.\d{3})+\b)"
-            r"|(?P<decimal>\b(?P<dec_int>\d+)[\.,](?P<dec_frac>\d{1,2}|\d{4,})\b)"
-            r"|(?P<integer>\b\d+\b)"
+            rf"(?P<ordinal>\b[kK]e-(?P<ord_num>\d+)\b)"
+            rf"|(?P<currency>\bRM\s*(?P<rm_num>{self._NUM_CORE_PATTERN}))"
+            rf"|(?P<percent>(?<!\w)(?P<pct_sign>-?)(?P<pct_num>{self._NUM_CORE_PATTERN})%)"
+            rf"|(?P<negative>(?<!\w)-(?P<neg_num>{self._NUM_CORE_PATTERN}))"
+            rf"|(?P<plain>\b{self._NUM_CORE_PATTERN}\b)"
         )
 
         result_parts: List[str] = []
@@ -176,22 +198,23 @@ class NumberConverter:
                 if original[0].isupper():
                     replacement = replacement.capitalize()
                 reason = f"Angka tingkat '{original}' diubah menjadi kata bilangan tingkat '{replacement}'."
-            elif match.group("thousand_comma"):
-                clean_num = int(original.replace(",", ""))
-                replacement = self.int_to_words(clean_num)
-                reason = f"Angka ribuan '{original}' diubah menjadi kalimat terbilang '{replacement}'."
-            elif match.group("thousand_dot"):
-                clean_num = int(original.replace(".", ""))
-                replacement = self.int_to_words(clean_num)
-                reason = f"Angka ribuan '{original}' diubah menjadi kalimat terbilang '{replacement}'."
-            elif match.group("decimal"):
-                dec_int = match.group("dec_int")
-                dec_frac = match.group("dec_frac")
-                replacement = self.decimal_to_words(dec_int, dec_frac)
-                reason = f"Angka perpuluhan '{original}' diubah menjadi kalimat terbilang '{replacement}'."
-            elif match.group("integer"):
-                num_val = int(original)
-                replacement = self.int_to_words(num_val)
+            elif match.group("currency"):
+                num_words = self._numeric_str_to_words(
+                    match.group("rm_num"), strip_zero_cents=True
+                )
+                replacement = f"RM {num_words}"
+                reason = f"Nilai mata wang '{original}' diubah menjadi '{replacement}'."
+            elif match.group("percent"):
+                pct_words = self._numeric_str_to_words(match.group("pct_num"))
+                prefix = "negatif " if match.group("pct_sign") == "-" else ""
+                replacement = f"{prefix}{pct_words} peratus"
+                reason = f"Peratusan '{original}' diubah menjadi '{replacement}'."
+            elif match.group("negative"):
+                neg_words = self._numeric_str_to_words(match.group("neg_num"))
+                replacement = f"negatif {neg_words}"
+                reason = f"Angka negatif '{original}' diubah menjadi '{replacement}'."
+            elif match.group("plain"):
+                replacement = self._numeric_str_to_words(original)
                 reason = f"Angka '{original}' diubah menjadi kalimat terbilang '{replacement}'."
 
             result_parts.append(text[last_idx:start])

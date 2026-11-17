@@ -2,14 +2,17 @@
 Modul Pemeriksa Penggunaan Kata Berdasarkan PRPM Malaysia & Detektor Campuran Bahasa Inggris.
 Aturan Kerja:
 1. Kata Bahasa Melayu yang tidak baku / bahasa pasar / salah eja dibakukan mengikut PRPM DBP Malaysia.
-2. Kata Majmuk Mantap (15 kata DBP) ditulis rapat, manakala kata majmuk biasa ditulis terpisah.
-3. Kata Bahasa Inggris dikenali melalui Offline English Lexicon dan TIDAK DIGANTI (tetap dipertahankan).
+2. Frasa kontekstual ('tanya pasal' -> 'tentang', 'boleh tak' -> 'boleh atau tidak') ditangani mengikut konteks ayat.
+3. Kata Majmuk Mantap (15 kata DBP) ditulis rapat, manakala kata majmuk biasa & kata sendi 'di/ke' ditulis terpisah.
+4. Kesalahan peluluhan KPST ('memparkir' -> 'memarkir', 'mensokong' -> 'menyokong') dikesan & dibakukan.
+5. Kata Bahasa Inggris dikenali melalui Offline English Lexicon dan TIDAK DIGANTI (tetap dipertahankan).
+6. Koreksi typo dibuat konservatif/aman; kata pendek/ambigu yang tidak dikenal tidak diubah paksa dan dilaporkan.
 """
 
 from __future__ import annotations
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from app.data.seed_lexicon import DB_PATH, init_database
@@ -24,8 +27,29 @@ class LexiconIssue:
     reason: str
 
 
+@dataclass
+class UnknownWordIssue:
+    word: str
+    suggestions: List[str] = field(default_factory=list)
+    reason: str = ""
+
+
 class LexiconChecker:
     """Pemeriksa kata Bahasa Melayu PRPM dengan dukungan bypass Bahasa Inggris."""
+
+    _PASAL_TOPIC_VERBS = (
+        "tanya", "bertanya", "menanya", "menanyakan",
+        "cakap", "bercakap", "bincang", "berbincang", "membincangkan",
+        "cerita", "bercerita", "menceritakan",
+        "tahu", "lupa", "ingat", "faham", "baca", "tulis",
+        "soal", "ulas", "beritahu", "maklum", "risau", "bimbang", "persoalkan",
+    )
+
+    _CLAUSE_END_TAK_PRECEDERS = (
+        "boleh", "betul", "jadi", "sudah", "ada", "sempat",
+        "faham", "nampak", "tahu", "mahu", "hendak", "nak",
+        "dapat", "perlu", "wajar", "ok", "okey",
+    )
 
     def __init__(self, db_path: str = DB_PATH) -> None:
         self.db_path = init_database(db_path)
@@ -40,7 +64,7 @@ class LexiconChecker:
         # Tambahan bentuk berimbuhan tidak baku -> baku PRPM
         self._affixed_standardization: Dict[str, Tuple[str, str]] = {
             "dipahami": ("difahami", "Bentuk pasif baku PRPM daripada 'faham' ialah 'difahami'."),
-            "memahami": ("memahami", ""),  # sudah baku
+            "memahami": ("memahami", ""),
             "kepahaman": ("kefahaman", "Kata terbitan baku PRPM daripada 'faham' ialah 'kefahaman'."),
             "pemahaman": ("kefahaman", "Dalam PRPM, 'kefahaman' atau 'pemahaman' digunakan; 'kefahaman' diutamakan."),
             "dipikirkan": ("difikirkan", "Ejaan baku PRPM ialah 'difikirkan' (kata dasar 'fikir')."),
@@ -60,12 +84,14 @@ class LexiconChecker:
             english_roots=self.english_words,
         )
 
-        # Indeks kata PRPM berdasarkan huruf pertama dan panjang untuk koreksi typo cepat
         self._prpm_by_first_char: Dict[str, List[str]] = {}
+        self._rebuild_typo_index()
+
+    def _rebuild_typo_index(self) -> None:
+        self._prpm_by_first_char = {}
         for w in self.prpm_words:
             if len(w) >= 5:
-                first_ch = w[0]
-                self._prpm_by_first_char.setdefault(first_ch, []).append(w)
+                self._prpm_by_first_char.setdefault(w[0], []).append(w)
 
     def _load_from_db(self) -> None:
         conn = sqlite3.connect(self.db_path)
@@ -95,20 +121,31 @@ class LexiconChecker:
 
         conn.close()
 
+    def reload(self) -> None:
+        """Memuat ulang seluruh tabel dari SQLite setelah impor/sinkronisasi."""
+        self._load_from_db()
+        self.morphology = MorphologyAnalyzer(
+            prpm_roots=self.prpm_words,
+            english_roots=self.english_words,
+        )
+        self._rebuild_typo_index()
+
     def check_and_standardize(
         self, text: str
-    ) -> Tuple[str, List[LexiconIssue], List[str]]:
+    ) -> Tuple[str, List[LexiconIssue], List[str], List[UnknownWordIssue]]:
         """
         Memeriksa penggunaan kata berdasarkan PRPM Malaysia dan mempertahankan kata Bahasa Inggris.
         Mengembalikan:
         - Teks yang telah dibakukan kata Melayu-nya
         - Daftar LexiconIssue (koreksi kata PRPM)
         - Daftar kata Bahasa Inggris yang terdeteksi dan dipertahankan
+        - Daftar UnknownWordIssue (kata tidak dikenal di kamus PRPM maupun Inggris)
         """
         issues: List[LexiconIssue] = []
         english_kept: List[str] = []
+        unknown_words: List[UnknownWordIssue] = []
 
-        # Tahap 1: Pemeriksaan Frasa / Kata Majmuk Mantap DBP (contoh: 'kerja sama' -> 'kerjasama')
+        # Tahap 1A: Pemeriksaan Frasa & Kata Majmuk Mantap DBP
         extra_phrases = {
             "macam mana": (
                 "bagaimana",
@@ -145,6 +182,9 @@ class LexiconChecker:
 
             text = pattern.sub(_replace_phrase, text)
 
+        # Tahap 1B: Pembakuan Kontekstual ('pasal', '... boleh tak')
+        text = self._apply_contextual_rules(text, issues)
+
         # Tahap 2: Pemeriksaan Token demi Token
         token_pattern = re.compile(r"\b[A-Za-z]+(?:[-'][A-Za-z]+)*\b")
         result_parts: List[str] = []
@@ -158,8 +198,11 @@ class LexiconChecker:
             result_parts.append(text[last_idx:start])
             replacement = orig_word
 
+            # 2.0 Lindungi singkatan gelaran bertitik (contoh: Dr., En., Pn., Hj.) agar tidak tertukar dengan 'dr' -> 'dari'
+            if lower_word in ("dr", "en", "pn", "hj", "hjh", "prof", "tn") and text[end : end + 1] == ".":
+                replacement = orig_word
             # 2.1 Cek apakah kata berada di kamus pembakuan langsung (ms_standardization)
-            if lower_word in self.ms_standardization:
+            elif lower_word in self.ms_standardization:
                 std_word, reason = self.ms_standardization[lower_word]
                 replacement = self._preserve_initial_case(orig_word, std_word)
                 issues.append(
@@ -207,9 +250,45 @@ class LexiconChecker:
                 replacement = orig_word
                 if orig_word not in english_kept:
                     english_kept.append(orig_word)
-            # 2.6 Cek apakah merupakan salah ketik (typo) dari kata baku PRPM Malaysia
+            # 2.6 Cek kesalahan peluluhan KPST (contoh: mempakai -> memakai, mensokong -> menyokong)
+            elif self.morphology.suggest_kpst_correction(lower_word) is not None:
+                fixed_kpst, kpst_reason = self.morphology.suggest_kpst_correction(lower_word)  # type: ignore
+                replacement = self._preserve_initial_case(orig_word, fixed_kpst)
+                issues.append(
+                    LexiconIssue(
+                        original=orig_word,
+                        replacement=replacement,
+                        category="PRPM_BAKU",
+                        reason=kpst_reason,
+                    )
+                )
+            # 2.7 Cek salah ketik (typo) secara aman/konservatif, atau laporkan kata tidak dikenal
             else:
-                typo_fix = self._find_prpm_typo_correction(lower_word)
+                prefix_stripped = text[:start].strip()
+                is_mid_title_case = (
+                    bool(prefix_stripped)
+                    and prefix_stripped[-1] not in (".", "?", "!")
+                    and orig_word[0].isupper()
+                    and not orig_word.isupper()
+                )
+                if is_mid_title_case:
+                    typo_fix, suggestions = (None, [])
+                    reason_msg = (
+                        f"Kata '{orig_word}' berhuruf besar di tengah ayat tidak dijumpai dalam kamus "
+                        "(dikekalkan sebagai kemungkinan Kata Nama Khas / nama orang / jenama)."
+                    )
+                else:
+                    typo_fix, suggestions = self._find_safe_typo_correction(lower_word)
+                    saran_txt = (
+                        f" Cadangan terdekat: {', '.join(suggestions)}."
+                        if suggestions
+                        else ""
+                    )
+                    reason_msg = (
+                        f"Kata '{orig_word}' tidak dijumpai dalam kamus PRPM atau Bahasa Inggeris "
+                        f"(dibiarkan tanpa perubahan).{saran_txt}"
+                    )
+
                 if typo_fix is not None:
                     replacement = self._preserve_initial_case(orig_word, typo_fix)
                     issues.append(
@@ -217,7 +296,15 @@ class LexiconChecker:
                             original=orig_word,
                             replacement=replacement,
                             category="PRPM_TYPO",
-                            reason=f" Pembetulan ejaan kata mengikut PRPM Malaysia: '{orig_word}' -> '{replacement}'.",
+                            reason=f"Pembetulan ejaan kata mengikut PRPM Malaysia: '{orig_word}' -> '{replacement}'.",
+                        )
+                    )
+                else:
+                    unknown_words.append(
+                        UnknownWordIssue(
+                            word=orig_word,
+                            suggestions=suggestions,
+                            reason=reason_msg,
                         )
                     )
 
@@ -225,7 +312,86 @@ class LexiconChecker:
             last_idx = end
 
         result_parts.append(text[last_idx:])
-        return "".join(result_parts), issues, english_kept
+        return "".join(result_parts), issues, english_kept, unknown_words
+
+    def _apply_contextual_rules(self, text: str, issues: List[LexiconIssue]) -> str:
+        """Menerapkan pembakuan kontekstual untuk 'pasal' dan '... tak' di akhir klausa."""
+        # 1A. '<kata kerja bicara/tanya> pasal' -> '<kata kerja> tentang'
+        verbs_re = "|".join(self._PASAL_TOPIC_VERBS)
+        topic_pat = re.compile(rf"\b({verbs_re})\s+(pasal)\b", re.IGNORECASE)
+
+        def _repl_topic_pasal(m: re.Match) -> str:
+            verb, pasal_tok = m.group(1), m.group(2)
+            repl = "Tentang" if pasal_tok[0].isupper() else "tentang"
+            issues.append(
+                LexiconIssue(
+                    original=pasal_tok,
+                    replacement=repl,
+                    category="PRPM_BAKU",
+                    reason="Kata tidak baku 'pasal' selepas kata kerja topik dibakukan menjadi 'tentang' mengikut PRPM.",
+                )
+            )
+            return f"{verb} {repl}"
+
+        text = topic_pat.sub(_repl_topic_pasal, text)
+
+        # 1B. 'pasal apa' -> 'mengapa'
+        pasal_apa_pat = re.compile(r"\bpasal\s+apa\b", re.IGNORECASE)
+
+        def _repl_pasal_apa(m: re.Match) -> str:
+            orig = m.group(0)
+            repl = "Mengapa" if orig[0].isupper() else "mengapa"
+            issues.append(
+                LexiconIssue(
+                    original=orig,
+                    replacement=repl,
+                    category="PRPM_BAKU",
+                    reason="Frasa lisan 'pasal apa' dibakukan menjadi 'mengapa' mengikut PRPM.",
+                )
+            )
+            return repl
+
+        text = pasal_apa_pat.sub(_repl_pasal_apa, text)
+
+        # 1C. Sisa 'pasal' -> 'kerana'
+        pasal_pat = re.compile(r"\bpasal\b", re.IGNORECASE)
+
+        def _repl_pasal_reason(m: re.Match) -> str:
+            orig = m.group(0)
+            repl = "Kerana" if orig[0].isupper() else "kerana"
+            issues.append(
+                LexiconIssue(
+                    original=orig,
+                    replacement=repl,
+                    category="PRPM_BAKU",
+                    reason="Penggunaan 'pasal' sebagai kata hubung sebab dibakukan menjadi 'kerana' mengikut PRPM.",
+                )
+            )
+            return repl
+
+        text = pasal_pat.sub(_repl_pasal_reason, text)
+
+        # 2. '<predikat tanya> tak' di akhir klausa/kalimat -> '<predikat> atau tidak'
+        prec_re = "|".join(self._CLAUSE_END_TAK_PRECEDERS)
+        end_tak_pat = re.compile(
+            rf"\b({prec_re})\s+(tak)(?=\s*(?:$|[.,?!]))", re.IGNORECASE
+        )
+
+        def _repl_end_tak(m: re.Match) -> str:
+            prec, tak_tok = m.group(1), m.group(2)
+            repl = "atau tidak"
+            issues.append(
+                LexiconIssue(
+                    original=f"{prec} {tak_tok}",
+                    replacement=f"{prec} {repl}",
+                    category="PRPM_BAKU",
+                    reason="Ungkapan tanya lisan di hujung ayat '... tak' dibakukan menjadi '... atau tidak'.",
+                )
+            )
+            return f"{prec} {repl}"
+
+        text = end_tak_pat.sub(_repl_end_tak, text)
+        return text
 
     def _check_clitic_standardization(self, lower_word: str) -> Optional[Tuple[str, str]]:
         """Memeriksa kata tidak baku yang diikuti akhiran -nya, -lah, atau -kah (misal: 'jawabannya' -> 'jawapannya')."""
@@ -242,46 +408,58 @@ class LexiconChecker:
                         )
         return None
 
-    def _find_prpm_typo_correction(self, lower_word: str) -> Optional[str]:
+    def _find_safe_typo_correction(self, lower_word: str) -> Tuple[Optional[str], List[str]]:
         """
-        Mencari koreksi salah ketik (Damerau-Levenshtein distance == 1)
-        terhadap kamus PRPM untuk kata dengan panjang >= 5 huruf.
+        Mencari kandidat koreksi ejaan jarak edit Damerau-Levenshtein == 1 secara konservatif.
+        Hanya melakukan penggantian otomatis jika:
+        - Transposisi 2 huruf bersebelahan pada kata >= 6 huruf dengan 1 kandidat unik (mis. pejabta -> pejabat).
+        - Penyisipan/penghapusan 1 huruf pada kata >= 6 huruf dengan 1 kandidat unik (mis. dokumn -> dokumen).
+        - Substitusi 1 huruf pada kata >= 7 huruf dengan 1 kandidat unik.
+        Jika tidak memenuhi syarat di atas (kata pendek 5 huruf/ambigu), tidak diganti paksa melainkan dikembalikan sebagai saran.
         """
         if len(lower_word) < 5:
-            return None
+            return None, []
 
-        candidates = self._prpm_by_first_char.get(lower_word[0], [])
-        best_match: Optional[str] = None
-
-        for cand in candidates:
+        candidates_info: List[Tuple[str, str]] = []
+        for cand in self._prpm_by_first_char.get(lower_word[0], []):
             if abs(len(cand) - len(lower_word)) > 1:
                 continue
-            if self._damerau_levenshtein_distance_1(lower_word, cand):
-                best_match = cand
-                break
+            edit_kind = self._classify_damerau_distance_1(lower_word, cand)
+            if edit_kind is not None:
+                candidates_info.append((cand, edit_kind))
 
-        return best_match
+        if not candidates_info:
+            return None, []
+
+        candidate_words = sorted(c for c, _ in candidates_info)
+        if len(candidates_info) == 1:
+            cand, kind = candidates_info[0]
+            if kind in ("transposition", "indel") and len(lower_word) >= 6:
+                return cand, candidate_words
+            if kind == "substitution" and len(lower_word) >= 7:
+                return cand, candidate_words
+
+        return None, candidate_words[:3]
 
     @staticmethod
-    def _damerau_levenshtein_distance_1(s1: str, s2: str) -> bool:
-        """Mengembalikan True jika jarak edit Damerau-Levenshtein antara s1 dan s2 tepat 1."""
+    def _classify_damerau_distance_1(s1: str, s2: str) -> Optional[str]:
+        """Mengembalikan jenis edit ('substitution', 'transposition', 'indel') jika jarak edit == 1, else None."""
         if s1 == s2:
-            return False
+            return None
         len1, len2 = len(s1), len(s2)
         if abs(len1 - len2) > 1:
-            return False
+            return None
 
-        # Panjang sama: substitusi 1 huruf atau transposisi 2 huruf bersebelahan
         if len1 == len2:
             diffs = [i for i in range(len1) if s1[i] != s2[i]]
             if len(diffs) == 1:
-                return True
+                return "substitution"
             if len(diffs) == 2 and diffs[1] == diffs[0] + 1:
                 i = diffs[0]
-                return s1[i] == s2[i + 1] and s1[i + 1] == s2[i]
-            return False
+                if s1[i] == s2[i + 1] and s1[i + 1] == s2[i]:
+                    return "transposition"
+            return None
 
-        # Perbedaan panjang 1: penyisipan atau penghapusan 1 huruf
         if len1 > len2:
             s1, s2 = s2, s1
             len1, len2 = len2, len1
@@ -294,9 +472,9 @@ class LexiconChecker:
             else:
                 diffs += 1
                 if diffs > 1:
-                    return False
+                    return None
                 j += 1
-        return True
+        return "indel"
 
     @staticmethod
     def _preserve_initial_case(orig: str, replacement: str) -> str:
@@ -314,10 +492,17 @@ class LexiconChecker:
         if not w:
             return
         conn = sqlite3.connect(self.db_path)
-        conn.execute("INSERT OR IGNORE INTO prpm_words (word) VALUES (?)", (w,))
+        conn.execute(
+            "INSERT OR REPLACE INTO prpm_words (word, source) VALUES (?, 'user')",
+            (w,),
+        )
         conn.commit()
         conn.close()
         self.prpm_words.add(w)
+        if len(w) >= 5:
+            bucket = self._prpm_by_first_char.setdefault(w[0], [])
+            if w not in bucket:
+                bucket.append(w)
 
     def add_standardization_rule(self, non_standard: str, standard_word: str, reason: str) -> None:
         ns = non_standard.strip().lower()
@@ -326,21 +511,31 @@ class LexiconChecker:
             return
         conn = sqlite3.connect(self.db_path)
         conn.execute(
-            "INSERT OR REPLACE INTO ms_standardization (non_standard, standard_word, reason) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO ms_standardization (non_standard, standard_word, reason, source) VALUES (?, ?, ?, 'user')",
             (ns, sw, reason),
         )
-        conn.execute("INSERT OR IGNORE INTO prpm_words (word) VALUES (?)", (sw,))
+        conn.execute("DELETE FROM prpm_words WHERE word = ?", (ns,))
+        for tok in sw.split():
+            conn.execute(
+                "INSERT OR IGNORE INTO prpm_words (word, source) VALUES (?, 'user')",
+                (tok,),
+            )
+            self.prpm_words.add(tok)
         conn.commit()
         conn.close()
         self.ms_standardization[ns] = (sw, reason)
-        self.prpm_words.add(sw)
+        self.prpm_words.discard(ns)
+        self._rebuild_typo_index()
 
     def add_english_word(self, word: str) -> None:
         w = word.strip().lower()
         if not w:
             return
         conn = sqlite3.connect(self.db_path)
-        conn.execute("INSERT OR IGNORE INTO english_words (word) VALUES (?)", (w,))
+        conn.execute(
+            "INSERT OR REPLACE INTO english_words (word, source) VALUES (?, 'user')",
+            (w,),
+        )
         conn.commit()
         conn.close()
         self.english_words.add(w)

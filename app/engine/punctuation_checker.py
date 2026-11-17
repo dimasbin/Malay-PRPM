@@ -3,9 +3,9 @@ Modul Pemeriksa Tanda Baca (Titik '.', Koma ',', Tanya '?') Berdasarkan Kaidah T
 Menangani:
 1. Penghapusan spasi sebelum tanda titik, koma, dan tanda tanya.
 2. Penambahan spasi setelah tanda titik, koma, dan tanda tanya jika rapat dengan kata berikutnya.
-3. Penormalan tanda baca ganda ('..', ',,', '??').
-4. Deteksi Ayat Tanya (kata tanya Melayu / partikel -kah) agar diakhiri tanda tanya ('?').
-5. Penambahan tanda titik ('.') pada akhir Ayat Penyata yang belum memiliki tanda penutup.
+3. Penormalan tanda baca ganda ('..', ',,', '??') sambil memelihara elipsis ('...') dan singkatan bertitik ('Dr.', 'En.').
+4. Deteksi Ayat Tanya langsung (kata tanya Melayu / partikel -kah / akhiran '... atau tidak') agar diakhiri '?'.
+5. Ayat Penyata (termasuk yang mengandungi klausa tidak langsung seperti 'tidak tahu di mana') diakhiri '.'.
 """
 
 from __future__ import annotations
@@ -49,6 +49,10 @@ class PunctuationChecker:
         "bagaimana",
     }
 
+    _TITLE_ABBR_RE = re.compile(r"\b(Dr|En|Pn|Hj|Hjh|Prof|Tn)\.")
+    _ABBR_TOKEN = "<ABBR_DOT>"
+    _ELLIPSIS_TOKEN = "<ELLIPSIS>"
+
     def check_and_fix(self, text: str) -> Tuple[str, List[PunctuationIssue]]:
         """Memeriksa dan memperbaiki tanda baca titik, koma, dan tanya pada kalimat."""
         if not text or not text.strip():
@@ -57,7 +61,10 @@ class PunctuationChecker:
         issues: List[PunctuationIssue] = []
         working = text.strip()
 
-        # 1. Hapus spasi sebelum tanda baca (.,?!)
+        # Lindungi elipsis tepat 3 titik ('...') sebelum normalisasi tanda baca ganda
+        working = re.sub(r"(?<!\.)\.{3}(?!\.)", self._ELLIPSIS_TOKEN, working)
+
+        # 1. Hapus spasi sebelum tanda baca (.,?!:;)
         space_before_pattern = re.compile(r"\s+([.,?!:;])")
         for m in space_before_pattern.finditer(working):
             orig_seg = m.group(0)
@@ -84,6 +91,7 @@ class PunctuationChecker:
                 )
             )
         working = re.sub(r",\.", ".", working)
+        working = re.sub(r";\.", ".", working)
         working = re.sub(r"([.,?!])\1+", r"\1", working)
 
         # 3. Tambahkan spasi setelah tanda baca (.,?!) jika menempel langsung dengan huruf
@@ -113,6 +121,7 @@ class PunctuationChecker:
 
         # 5. Evaluasi tiap kalimat untuk tanda penutup akhir ('.' vs '?')
         working = self._fix_sentence_endings(working, issues)
+        working = working.replace(self._ELLIPSIS_TOKEN, "...")
 
         return working, issues
 
@@ -120,8 +129,10 @@ class PunctuationChecker:
         self, text: str, issues: List[PunctuationIssue]
     ) -> str:
         """Memeriksa setiap kalimat apakah merupakan Ayat Tanya ('?') atau Ayat Penyata ('.')."""
-        # Pisahkan berdasarkan penutup kalimat (. ? !) sambil menyimpan tanda penutupnya
-        parts = re.split(r"([.?!])", text)
+        # Lindungi titik singkatan gelar ('Dr.', 'En.', 'Pn.', dll.) agar tidak dianggap batas kalimat
+        masked = self._TITLE_ABBR_RE.sub(rf"\1{self._ABBR_TOKEN}", text)
+
+        parts = re.split(r"([.?!])", masked)
         rebuilt: List[str] = []
 
         idx = 0
@@ -135,14 +146,20 @@ class PunctuationChecker:
                     rebuilt.append(ending)
                 continue
 
-            is_question, q_trigger = self._is_interrogative_sentence(sentence_body)
+            # Jika diakhiri elipsis, biarkan elipsis sebagai penutup
+            if sentence_body.rstrip().endswith(self._ELLIPSIS_TOKEN) and ending == "":
+                rebuilt.append(sentence_body)
+                continue
+
+            readable_body = sentence_body.replace(self._ABBR_TOKEN, ".").strip()
+            is_question, q_trigger = self._is_interrogative_sentence(readable_body)
 
             if is_question:
                 if ending == ".":
                     issues.append(
                         PunctuationIssue(
-                            original=f"{sentence_body.strip()}.",
-                            replacement=f"{sentence_body.strip()}?",
+                            original=f"{readable_body}.",
+                            replacement=f"{readable_body}?",
                             reason=(
                                 f"Kalimat mengandung penanda tanya '{q_trigger}' (Ayat Tanya), "
                                 "sehingga tanda titik ('.') di akhir kalimat diubah menjadi tanda tanya ('?')."
@@ -153,8 +170,8 @@ class PunctuationChecker:
                 elif ending == "":
                     issues.append(
                         PunctuationIssue(
-                            original=sentence_body.strip(),
-                            replacement=f"{sentence_body.strip()}?",
+                            original=readable_body,
+                            replacement=f"{readable_body}?",
                             reason=(
                                 f"Kalimat mengandung penanda tanya '{q_trigger}' (Ayat Tanya), "
                                 "sehingga ditambahkan tanda tanya ('?') di akhir kalimat."
@@ -166,8 +183,8 @@ class PunctuationChecker:
                 if ending == "":
                     issues.append(
                         PunctuationIssue(
-                            original=sentence_body.strip(),
-                            replacement=f"{sentence_body.strip()}.",
+                            original=readable_body,
+                            replacement=f"{readable_body}.",
                             reason="Kalimat penyata wajib diakhiri dengan tanda titik ('.').",
                         )
                     )
@@ -175,7 +192,7 @@ class PunctuationChecker:
 
             rebuilt.append(sentence_body + ending)
 
-        return "".join(rebuilt)
+        return "".join(rebuilt).replace(self._ABBR_TOKEN, ".")
 
     def _is_interrogative_sentence(self, sentence: str) -> Tuple[bool, str]:
         """
@@ -187,26 +204,38 @@ class PunctuationChecker:
         if not words:
             return False, ""
 
-        # 1. Cek kata tanya mutlak di mana saja dalam kalimat (apakah, siapakah, bilakah, adakah, mengapa, bagaimana, dll.)
+        # 1. Kata tanya mutlak atau partikel -kah (apakah, siapakah, sudahkah, bolehkah, di manakah, dll.)
         for w in words:
             if w in self.STRONG_QUESTION_WORDS:
                 return True, w
-            # Kata berpartikel -kah (contoh: bolehkah, sudahkah, benarkah, perlukah, dapatkah)
-            if w.endswith("kah") and len(w) >= 6 and w not in ("langkah", "sedekah", "nafkah", "tingkah", "rekah", "mekah", "nikah", "warkah", "berkah"):
+            if (
+                w.endswith("kah")
+                and len(w) >= 6
+                and w not in ("langkah", "sedekah", "nafkah", "tingkah", "rekah", "mekah", "nikah", "warkah", "berkah")
+            ):
                 return True, w
 
-        # 2. Cek frasa tanya 'di mana', 'ke mana', 'dari mana', 'di manakah'
-        for phrase in ("di mana", "ke mana", "dari mana", "di manakah", "ke manakah", "dari manakah"):
+        # 2. Frasa tanya berpartikel -kah ('di manakah', 'ke manakah', 'dari manakah')
+        for phrase in ("di manakah", "ke manakah", "dari manakah"):
             if re.search(rf"\b{re.escape(phrase)}\b", clean):
                 return True, phrase
 
-        # 3. Cek kata tanya kontekstual ('apa', 'siapa', 'bila', 'berapa') di awal kalimat atau tepat setelah koma
+        # 3. Kata tanya kontekstual & frasa lokasi tanya ('di mana', 'ke mana', 'dari mana')
+        #    Hanya dianggap Ayat Tanya jika berada di awal kalimat atau awal klausa setelah koma.
         clauses = [c.strip() for c in clean.split(",") if c.strip()]
         for clause in clauses:
+            for phrase in ("di mana", "ke mana", "dari mana"):
+                if clause.startswith(phrase + " ") or clause == phrase:
+                    return True, phrase
             clause_words = re.findall(r"\b[a-z]+\b", clause)
             if clause_words and clause_words[0] in self.CONTEXTUAL_QUESTION_WORDS:
-                # Pastikan bukan frasa pernyataan seperti 'bila-bila' atau 'apa-apa'
                 if not clause.startswith(f"{clause_words[0]}-{clause_words[0]}"):
                     return True, clause_words[0]
+
+        # 4. Penanda tanya di akhir kalimat ('... atau tidak', '..., bukan')
+        if clean.endswith("atau tidak"):
+            return True, "atau tidak"
+        if re.search(r",\s*(bukan|ya)$", clean):
+            return True, clean.split(",")[-1].strip()
 
         return False, ""

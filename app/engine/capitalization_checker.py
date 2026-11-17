@@ -1,16 +1,20 @@
 """
-Modul Pemeriksa Huruf Kapital dan Non-Kapital (Case Normalization) Bahasa Melayu PRPM.
+Modul Pemeriksa Huruf Kapital dan Non-Kapital (Case Normalization) Mengikut Tatabahasa Dewan PRPM.
 Menangani:
 1. Huruf pertama pada awal kalimat dan selepas tanda noktah ('.'), tanda tanya ('?'), atau tanda seru ('!') wajib kapital.
-2. Kata Nama Khas (hari, bulan, negara, negeri, bandar seperti 'Isnin', 'Kuala Lumpur', 'Malaysia') wajib diawali huruf kapital.
-3. Akronim rasmi ('PRPM', 'DBP', 'UiTM', 'KWSP', dll.) ditulis dengan huruf kapital yang tepat.
-4. Kata biasa (Melayu maupun Inggris) di tengah kalimat yang menggunakan huruf kapital secara salah diubah menjadi huruf kecil (non-kapital).
+2. Kata Nama Khas (nama orang, jenama/produk, hari, bulan, negara, negeri, bandar, bahasa) wajib diawali huruf kapital.
+3. Akronim rasmi ('PRPM', 'DBP', 'UiTM', 'KWSP', 'RM', dll.) ditulis dengan huruf kapital yang tepat.
+4. Kata tugas tengah nama orang ('bin', 'binti', 'al-') kekal huruf kecil di tengah kalimat.
+5. Kata biasa (Melayu maupun Inggris dalam kamus umum) di tengah kalimat yang salah kapital diubah ke huruf kecil,
+   sedangkan nama diri/merek tak dikenal yang berpola Title Case dipertahankan sebagai Kata Nama Khas.
 """
 
 from __future__ import annotations
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
+
+from app.engine.morphology import MorphologyAnalyzer
 
 
 @dataclass
@@ -45,11 +49,51 @@ class CapitalizationChecker:
         "lhdn": "LHDN",
         "felda": "FELDA",
         "petronas": "PETRONAS",
+        "cimb": "CIMB",
     }
 
-    def __init__(self, proper_nouns: Dict[str, str], acronyms: Set[str]) -> None:
+    # Jenama yang bertindih dengan kata biasa Inggris/Melayu: dipertahankan jika memang ditulis kapital
+    CASE_SENSITIVE_BRANDS: Set[str] = {
+        "Chrome", "Word", "Teams", "Zoom", "Excel", "Apple", "Grab",
+        "Windows", "Linux", "Proton", "Perodua", "Notion", "Slack",
+        "Oracle", "Java", "Python", "Android", "Google", "WhatsApp",
+    }
+
+    # Kontraksi kata ganti 'I' dalam Bahasa Inggris
+    _EN_I_CONTRACTIONS: Dict[str, str] = {
+        "i'm": "I'm",
+        "i've": "I've",
+        "i'll": "I'll",
+        "i'd": "I'd",
+    }
+
+    _TITLE_ABBR_PREFIX_RE = re.compile(r"(?:^|\s)(?:Dr|En|Pn|Hj|Hjh|Prof|Tn)\.$")
+    _NAME_PRECEDERS_RE = re.compile(
+        r"(?:^|\s)(?:(?:Dr|En|Pn|Hj|Hjh|Prof|Tn)\.|(?:encik|puan|cik|tuan|datuk|dato|tun|bin|binti))\s*$",
+        re.IGNORECASE,
+    )
+    _TITLE_WORDS_BEFORE_NAME = {
+        "encik", "puan", "cik", "tuan", "datuk", "dato", "tun",
+        "haji", "hajah", "profesor", "doktor",
+    }
+    _FOLLOWING_PROPER_NAME_RE = re.compile(r"^\s+[A-Z][a-z]+")
+
+    def __init__(
+        self,
+        proper_nouns: Dict[str, str],
+        acronyms: Set[str],
+        prpm_words: Optional[Set[str]] = None,
+        english_words: Optional[Set[str]] = None,
+        morphology: Optional[MorphologyAnalyzer] = None,
+    ) -> None:
         self.proper_nouns = proper_nouns
         self.acronyms = {a.upper() for a in acronyms}
+        self.prpm_words = prpm_words or set()
+        self.english_words = english_words or set()
+        self.morphology = morphology or MorphologyAnalyzer(
+            prpm_roots=self.prpm_words,
+            english_roots=self.english_words,
+        )
         self._multi_word_propers = {
             k: v for k, v in self.proper_nouns.items() if " " in k
         }
@@ -66,7 +110,6 @@ class CapitalizationChecker:
         working = text
 
         # 1. Tangani Kata Nama Khas berbilang kata terlebih dahulu (contoh: 'kuala lumpur' -> 'Kuala Lumpur')
-        # Gunakan placeholder sementara atau penanda rentang agar tidak diturunkan kembali pada tahap token
         protected_spans: List[Tuple[int, int]] = []
         for lower_phrase, proper_phrase in self._multi_word_propers.items():
             pattern = re.compile(rf"\b{re.escape(lower_phrase)}\b", re.IGNORECASE)
@@ -85,7 +128,6 @@ class CapitalizationChecker:
 
             working = pattern.sub(_repl_multi, working)
 
-        # Catat semua posisi Kata Nama Khas berbilang kata yang sudah benar
         for _, proper_phrase in self._multi_word_propers.items():
             for m in re.finditer(rf"\b{re.escape(proper_phrase)}\b", working):
                 protected_spans.append(m.span())
@@ -113,10 +155,8 @@ class CapitalizationChecker:
                 last_idx = end
                 continue
 
-            # Cek apakah kata ini berada di awal kalimat atau tepat setelah '.', '?', '!'
             prefix_slice = working[:start]
             is_sentence_start = self._is_at_sentence_start(prefix_slice)
-
             target_word = orig_word
 
             # Kasus A: Akronim tidak ambigu (misal: prpm -> PRPM, dbp -> DBP, uitm -> UiTM)
@@ -133,7 +173,10 @@ class CapitalizationChecker:
             # Kasus B: Kata sudah ditulis kapital penuh dan terdaftar di daftar akronim (misal: RM, KL, CEO, API, IT)
             elif orig_word.isupper() and len(orig_word) >= 2 and orig_word in self.acronyms:
                 target_word = orig_word
-            # Kasus C: Kata Nama Khas tunggal (contoh: isnin -> Isnin, malaysia -> Malaysia, januari -> Januari)
+            # Kasus C: Jenama sensitif huruf kapital yang ditulis sesuai bentuk jenamanya (Chrome, Zoom, Excel)
+            elif orig_word in self.CASE_SENSITIVE_BRANDS:
+                target_word = orig_word
+            # Kasus D: Kata Nama Khas tunggal (contoh: isnin -> Isnin, malaysia -> Malaysia, google -> Google)
             elif lower_word in self._single_word_propers:
                 target_word = self._single_word_propers[lower_word]
                 if orig_word != target_word:
@@ -144,10 +187,41 @@ class CapitalizationChecker:
                             reason=f"Kata nama khas '{target_word}' wajib diawali huruf kapital.",
                         )
                     )
-            # Kasus D: Kata ganti 'I' dan kontraksinya (I'm, I've, I'll, I'd) dalam Bahasa Inggris
-            elif orig_word in ("I", "I'm", "I've", "I'll", "I'd"):
-                target_word = orig_word
-            # Kasus E: Kata berada di awal kalimat -> Huruf pertama wajib kapital, sisanya huruf kecil
+            # Kasus E: Kata ganti 'I' dan kontraksi Bahasa Inggris (i'm -> I'm, i've -> I've)
+            elif lower_word in self._EN_I_CONTRACTIONS:
+                target_word = self._EN_I_CONTRACTIONS[lower_word]
+                if orig_word != target_word:
+                    issues.append(
+                        CapitalizationIssue(
+                            original=orig_word,
+                            replacement=target_word,
+                            reason=f"Kata ganti diri Bahasa Inggeris '{target_word}' wajib diawali huruf kapital.",
+                        )
+                    )
+            elif orig_word == "I":
+                target_word = "I"
+            # Kasus F: Singkatan gelar bertitik (Dr., En., Pn., Hj., Hjh., Prof., Tn.) atau panggilan sebelum nama orang
+            elif lower_word in ("dr", "en", "pn", "hj", "hjh", "prof", "tn") and working[end : end + 1] == ".":
+                target_word = lower_word[0].upper() + lower_word[1:]
+                if orig_word != target_word:
+                    issues.append(
+                        CapitalizationIssue(
+                            original=orig_word,
+                            replacement=target_word,
+                            reason=f"Singkatan gelaran '{target_word}.' wajib diawali huruf kapital.",
+                        )
+                    )
+            elif lower_word in self._TITLE_WORDS_BEFORE_NAME and self._FOLLOWING_PROPER_NAME_RE.match(working[end:]):
+                target_word = lower_word[0].upper() + lower_word[1:]
+                if orig_word != target_word:
+                    issues.append(
+                        CapitalizationIssue(
+                            original=orig_word,
+                            replacement=target_word,
+                            reason=f"Kata gelaran/panggilan '{target_word}' sebelum nama khas wajib diawali huruf kapital.",
+                        )
+                    )
+            # Kasus G: Kata berada di awal kalimat -> Huruf pertama wajib kapital, sisanya huruf kecil
             elif is_sentence_start:
                 target_word = lower_word[0].upper() + lower_word[1:]
                 if orig_word != target_word:
@@ -163,7 +237,12 @@ class CapitalizationChecker:
                             reason=reason,
                         )
                     )
-            # Kasus F: Kata biasa di tengah kalimat -> Wajib huruf kecil (non-kapital)
+            # Kasus H: Kata Title Case/Mixed Case di tengah kalimat yang BUKAN kata umum kamus atau berada di posisi nama orang -> pelihara
+            elif self._is_likely_proper_noun_token(
+                orig_word, lower_word, prefix_slice, working[end:]
+            ):
+                target_word = orig_word
+            # Kasus I: Kata biasa di tengah kalimat -> Wajib huruf kecil (non-kapital)
             else:
                 target_word = lower_word
                 if orig_word != target_word:
@@ -181,10 +260,34 @@ class CapitalizationChecker:
         result_parts.append(working[last_idx:])
         return "".join(result_parts), issues
 
-    @staticmethod
-    def _is_at_sentence_start(prefix_slice: str) -> bool:
+    def _is_likely_proper_noun_token(
+        self,
+        orig_word: str,
+        lower_word: str,
+        prefix_slice: str = "",
+        suffix_slice: str = "",
+    ) -> bool:
+        """
+        Menentukan apakah token berhuruf kapital di tengah kalimat kemungkinan merupakan
+        Kata Nama Khas (nama orang, merek, tempat) yang tidak boleh dipaksa jadi huruf kecil.
+        """
+        if not orig_word[0].isupper() or orig_word.isupper():
+            return False
+        if lower_word in ("bin", "binti"):
+            return False
+        if self._NAME_PRECEDERS_RE.search(prefix_slice) or re.match(r"^\s+(?:bin|binti)\b", suffix_slice, re.IGNORECASE):
+            return True
+        is_common_word = (
+            self.morphology.is_valid_malay_word(lower_word)
+            or self.morphology.is_valid_english_word(lower_word)
+        )
+        return not is_common_word
+
+    def _is_at_sentence_start(self, prefix_slice: str) -> bool:
         """Menentukan apakah posisi saat ini adalah awal teks atau tepat setelah tanda akhir kalimat (. ? !)."""
         stripped = prefix_slice.strip()
         if not stripped:
             return True
+        if self._TITLE_ABBR_PREFIX_RE.search(stripped):
+            return False
         return stripped[-1] in (".", "?", "!")

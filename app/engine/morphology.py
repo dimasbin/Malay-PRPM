@@ -2,17 +2,23 @@
 Modul Analisis Morfologi Bahasa Melayu (PRPM DBP) & Infleksi Bahasa Inggris.
 Digunakan untuk:
 1. Memvalidasi kata berimbuhan Bahasa Melayu (awalan, akhiran, apitan, partikel, kata ganda)
-   terhadap leksikon kata dasar PRPM.
-2. Mengenali kata Bahasa Inggris berimbuhan (-s, -es, -ed, -ing, -ly, un-, re-, dll.)
+   berdasarkan Hukum Peluluhan KPST Tatabahasa Dewan / PRPM.
+2. Mendeteksi & mengoreksi kesalahan peluluhan KPST (mis. memparkir -> memarkir, mensokong -> menyokong).
+3. Mengenali kata Bahasa Inggris berimbuhan (-s, -es, -ed, -ing, -ly, un-, re-, dll.)
    agar kata campuran Bahasa Inggris tetap dipertahankan dan tidak dianggap salah eja.
 """
 
 from __future__ import annotations
-from typing import Optional, Set
+from typing import Optional, Set, Tuple
 
 
 class MorphologyAnalyzer:
     """Penganalisis morfologi Bahasa Melayu PRPM dan Bahasa Inggris."""
+
+    # Pengecualian rasmi PRPM/DBP bagi kata dasar berawalan k, p, s, t yang tidak luluh
+    _K_NON_DROP_STEMS = {"kaji"}
+    _P_NON_DROP_STEMS = {"punyai", "pelawa", "pelbagai", "pelajar"}
+    _T_NON_DROP_STEMS = {"tadbir", "tafsir", "terjemah", "takrif", "takluk", "taksir", "tertawa"}
 
     def __init__(self, prpm_roots: Set[str], english_roots: Set[str]) -> None:
         self.prpm_roots = prpm_roots
@@ -67,7 +73,6 @@ class MorphologyAnalyzer:
             if word.endswith(suf) and len(word) > len(suf) + 2:
                 base = word[: -len(suf)]
                 stem_candidates.add(base)
-                # Jika double suffix seperti -kannya sudah dikupas sebelumnya, cek juga kombinasi -kan/-i
                 if suf == "kan" and base.endswith("i") and len(base) > 3:
                     stem_candidates.add(base[:-1])
 
@@ -79,57 +84,90 @@ class MorphologyAnalyzer:
 
         return False
 
+    def _can_keep_k(self, rest: str) -> bool:
+        return (
+            rest in self._K_NON_DROP_STEMS
+            or rest.startswith(("kh", "kr", "kl", "ks", "kt", "kw"))
+        )
+
+    def _can_keep_s(self, rest: str) -> bool:
+        return rest.startswith(("sy", "st", "sk", "sp", "sl", "sm", "sn", "sr", "sw"))
+
+    def _can_keep_p(self, rest: str) -> bool:
+        return (
+            rest in self._P_NON_DROP_STEMS
+            or rest.startswith(("pr", "pl", "ps", "pt"))
+        )
+
+    def _can_keep_t(self, rest: str) -> bool:
+        return (
+            rest in self._T_NON_DROP_STEMS
+            or rest.startswith(("tr", "ts", "tw"))
+        )
+
     def _strip_malay_prefixes(self, word: str) -> bool:
-        """Mengupas awalan Bahasa Melayu (termasuk peluluhan KPST) dan mengecek kata dasar."""
+        """Mengupas awalan Bahasa Melayu mengikut hukum peluluhan KPST Tatabahasa Dewan."""
         # Awalan tanpa peluluhan
         simple_prefixes = (
             "memper", "diper", "ber", "be", "ter", "te", "per", "pe",
-            "di", "ke", "se", "ku", "kau", "mahasis", "pra", "pasca", "sub", "anti", "pro", "dw", "eka"
+            "di", "ke", "se", "ku", "kau", "pra", "pasca", "sub", "anti", "pro", "dwi", "eka",
         )
         for pref in simple_prefixes:
             if word.startswith(pref) and len(word) > len(pref) + 2:
                 rest = word[len(pref):]
                 if rest in self.prpm_roots:
                     return True
-                # Lapis kedua awalan (mis. keber- -> ke + ber, sepen- -> se + pen)
                 for sub_pref in ("ber", "ter", "per", "pe"):
                     if rest.startswith(sub_pref) and rest[len(sub_pref):] in self.prpm_roots:
                         return True
 
-        # Awalan sengau (meN- / peN-) beserta hukum peluluhan KPST
-        # 1. menge- / penge- (untuk kata dasar 1 suku kata: cat -> mengecat, sah -> mengesahkan, pos -> mengepos)
+        # 1. menge- / penge- (kata dasar 1 suku kata: cat -> mengecat, sah -> mengesahkan, pos -> mengepos)
         for pref in ("menge", "penge"):
             if word.startswith(pref) and len(word) > len(pref) + 1:
                 rest = word[len(pref):]
                 if rest in self.prpm_roots:
                     return True
 
-        # 2. meng- / peng- (vokal, g, h, kh, atau peluluhan 'k')
+        # 2. meng- / peng- (vokal, g, h, atau peluluhan 'k'; 'k' kekal hanya pada gugus konsonan/pengecualian)
         for pref in ("meng", "peng"):
             if word.startswith(pref) and len(word) > len(pref) + 2:
                 rest = word[len(pref):]
-                if rest in self.prpm_roots or ("k" + rest) in self.prpm_roots:
+                if ("k" + rest) in self.prpm_roots:
                     return True
+                if rest in self.prpm_roots:
+                    if not rest.startswith("k") or self._can_keep_k(rest):
+                        return True
 
         # 3. meny- / peny- (peluluhan 's')
         for pref in ("meny", "peny"):
             if word.startswith(pref) and len(word) > len(pref) + 1:
                 rest = word[len(pref):]
-                if ("s" + rest) in self.prpm_roots or rest in self.prpm_roots:
+                if ("s" + rest) in self.prpm_roots:
+                    return True
+                if rest in self.prpm_roots and not rest.startswith("s"):
                     return True
 
-        # 4. mem- / pem- (b, f, v, atau peluluhan 'p')
+        # 4. mem- / pem- (b, f, v, atau peluluhan 'p'; 'p' kekal hanya pada gugus konsonan/pengecualian)
         for pref in ("mem", "pem"):
             if word.startswith(pref) and len(word) > len(pref) + 2:
                 rest = word[len(pref):]
-                if rest in self.prpm_roots or ("p" + rest) in self.prpm_roots or ("f" + rest) in self.prpm_roots:
+                if ("p" + rest) in self.prpm_roots or ("f" + rest) in self.prpm_roots:
                     return True
+                if rest in self.prpm_roots:
+                    if not rest.startswith("p") or self._can_keep_p(rest):
+                        return True
 
-        # 5. men- / pen- (c, d, j, sy, z, atau peluluhan 't')
+        # 5. men- / pen- (c, d, j, sy, z, atau peluluhan 't'; 's'/'t' kekal hanya pada gugus konsonan/pengecualian)
         for pref in ("men", "pen"):
             if word.startswith(pref) and len(word) > len(pref) + 2:
                 rest = word[len(pref):]
-                if rest in self.prpm_roots or ("t" + rest) in self.prpm_roots:
+                if ("t" + rest) in self.prpm_roots:
+                    return True
+                if rest in self.prpm_roots:
+                    if rest.startswith("s") and not self._can_keep_s(rest):
+                        return False
+                    if rest.startswith("t") and not self._can_keep_t(rest):
+                        return False
                     return True
 
         # 6. me- / pe- (l, m, n, ng, ny, r, w, y)
@@ -140,6 +178,59 @@ class MorphologyAnalyzer:
                     return True
 
         return False
+
+    def suggest_kpst_correction(self, word: str) -> Optional[Tuple[str, str]]:
+        """
+        Mendeteksi kesalahan peluluhan KPST (seperti mempakai -> memakai, mensokong -> menyokong,
+        mentulis -> menulis, mengkira -> mengira) dan mengembalikan bentuk bakunya jika kata dasar sah.
+        """
+        w = word.lower().strip()
+        if not w or len(w) < 6:
+            return None
+
+        # Kupas partikel (-lah, -kah, -tah, -nya, -ku, -mu) dan akhiran (-kan, -i, -an) untuk mencari stem
+        rules = [
+            ("mengk", "meng", "k", self._can_keep_k),
+            ("pengk", "peng", "k", self._can_keep_k),
+            ("memp", "mem", "p", self._can_keep_p),
+            ("pemp", "pem", "p", self._can_keep_p),
+            ("mens", "meny", "s", self._can_keep_s),
+            ("pens", "peny", "s", self._can_keep_s),
+            ("ment", "men", "t", self._can_keep_t),
+            ("pent", "pen", "t", self._can_keep_t),
+        ]
+
+        for bad_pref, good_pref, kpst_char, keep_fn in rules:
+            if w.startswith(bad_pref):
+                rest_after_bad = w[len(bad_pref):]
+                if len(rest_after_bad) < 2:
+                    continue
+                full_stem = kpst_char + rest_after_bad
+                if keep_fn(full_stem):
+                    continue
+                if self._has_valid_root_with_suffixes(full_stem):
+                    fixed = good_pref + rest_after_bad
+                    reason = (
+                        f"Mengikut hukum peluluhan KPST PRPM DBP, huruf '{kpst_char}' pada kata dasar "
+                        f"wajib luluh apabila menerima imbuhan ('{w}' -> '{fixed}')."
+                    )
+                    return fixed, reason
+
+        return None
+
+    def _has_valid_root_with_suffixes(self, stem: str) -> bool:
+        """Memeriksa apakah stem (termasuk kemungkinan akhiran -kan/-i/-an/-nya) berakar pada prpm_roots."""
+        candidates = {stem}
+        for clitic in ("lah", "kah", "tah", "nya", "ku", "mu"):
+            if stem.endswith(clitic) and len(stem) > len(clitic) + 3:
+                candidates.add(stem[: -len(clitic)])
+
+        for cand in list(candidates):
+            for suf in ("kan", "an", "i"):
+                if cand.endswith(suf) and len(cand) > len(suf) + 2:
+                    candidates.add(cand[: -len(suf)])
+
+        return any(c in self.prpm_roots for c in candidates)
 
     # ========================================================================
     # 2. VALIDATOR MORFOLOGI BAHASA INGGRIS (UNTUK BYPASS KATA INGGRIS)
